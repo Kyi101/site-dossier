@@ -1,0 +1,47 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+
+# Node (in case we ever add)
+node_modules/
+__pycache__/
+
+npm-debug.log*
+yarn-error.log*
+
+# Captures are user data, not source
+../design-inspo/
+
+# Local artifacts
+*.log
+runs/
+dist/
+data/
+captures/
+screenshots/
+
+# Local working notes and release planning. Keep these on disk, outside Git.
+CLAUDE.md
+AGENTS.md
+AUTONOMY.md
+.agents/
+.codex/
+.claude/
+docs/ui/
+docs/design/
+STATUS.md
+DECISIONS.md
+NOTES.md
+docs/superpowers/
+docs/chrome-web-store.md
+prompts/
+prototypes/
+.superpowers/
+.claude/settings.local.json
+
+# Ignored legacy FFmpeg code; it is no longer shipped
+offscreen/ffmpeg/

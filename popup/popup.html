@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Site Dossier</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main>
+    <header class="masthead">
+      <div class="brand">
+        <img src="../icons/48.png" width="28" height="28" alt="">
+        <span>Site Dossier</span>
+      </div>
+      <div class="header-actions">
+        <span id="state-badge" class="state-badge" data-tone="neutral">Checking</span>
+        <button id="help-toggle" class="help-toggle" type="button" aria-label="Quick guide" title="Quick guide" aria-expanded="false" aria-controls="help-view">?</button>
+      </div>
+    </header>
+
+    <div id="capture-view">
+      <p class="target-line"><span>Page</span><strong id="page-host">Checking…</strong></p>
+
+      <section class="section" aria-labelledby="folder-heading">
+        <h2 id="folder-heading">Save to</h2>
+        <div class="folder-row">
+          <strong id="folder-name" aria-live="polite">No folder selected</strong>
+          <button id="pick-dir" class="folder-button" type="button" disabled>Choose</button>
+        </div>
+        <p id="folder-hint" class="folder-hint">Choose or create a folder inside Desktop, Documents, or another location.</p>
+      </section>
+
+      <fieldset class="section mode-section">
+        <legend>Capture mode</legend>
+        <div class="mode-options">
+          <label><input id="mode-auto" type="radio" name="capture-mode" value="auto" checked><span>Auto</span></label>
+          <label><input id="mode-manual" type="radio" name="capture-mode" value="manual"><span>Manual</span></label>
+        </div>
+      </fieldset>
+
+      <details class="extras">
+        <summary>Add note or tags <span>Optional</span></summary>
+        <div class="extra-fields">
+          <label for="note">Note</label>
+          <textarea id="note" rows="2" placeholder="What caught your eye?" disabled></textarea>
+          <label for="tags">Tags <span class="label-hint">· separate with commas</span></label>
+          <input id="tags" type="text" placeholder="Typography, motion, layout" disabled>
+        </div>
+      </details>
+
+      <footer>
+        <p id="message" class="message" role="alert" hidden></p>
+        <button id="start" class="start-button" type="button" disabled>Start auto capture</button>
+        <button id="stop" class="stop-button" type="button" hidden>Stop recording</button>
+        <p id="guidance" class="guidance" aria-live="polite">Checking page and folder…</p>
+      </footer>
+    </div>
+
+    <section id="help-view" class="help-view" aria-labelledby="help-heading" hidden>
+      <div class="help-heading-row">
+        <h1 id="help-heading" tabindex="-1">Quick guide</h1>
+        <button id="help-back" class="help-back" type="button">Back</button>
+      </div>
+      <div class="help-content">
+        <h2>Auto</h2>
+        <p>The default for regular pages. Scrolls, records video, and takes screenshots together. Stops at the bottom or after 30 seconds, then saves.</p>
+
+        <h2>Manual</h2>
+        <p>For menus, animations, and other interactions you want to record yourself. You control the page until you press Stop.</p>
+        <p><strong>After Stop, the page scrolls once automatically for screenshots</strong>, then returns to your position. The video has already stopped.</p>
+
+        <h2>Stop and saving</h2>
+        <p>Use Stop on the camera control or Stop recording in this popup. Keep the captured tab active until Saved appears. Saving can take a little while; a failed save shows an error.</p>
+
+        <h2>Choose a folder</h2>
+        <p>On Windows, choose or create a folder such as Desktop\Site Dossier. Chrome blocks Desktop and Documents themselves. It may ask for folder access again after a browser restart.</p>
+
+        <h2>What gets saved</h2>
+        <p>A full-page JPEG, video, contact sheet when available, HTML snapshot, and design tokens. Notes and tags are optional. Files stay in your chosen folder.</p>
+        <p>The camera control stays visible and appears in the JPEG and video. The HTML snapshot is a reference, not a guaranteed offline copy.</p>
+
+        <h2>Appearance</h2>
+        <p>The popup follows your system theme automatically.</p>
+      </div>
+    </section>
+  </main>
+  <script src="popup.js" type="module"></script>
+</body>
+</html>

@@ -1,0 +1,43 @@
+{
+  "manifest_version": 3,
+  "name": "Site Dossier",
+  "version": "0.1.0",
+  "description": "Save a web page as a local design reference with a JPEG, scroll video, HTML, and design tokens.",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "tabCapture",
+    "offscreen",
+    "storage",
+    "notifications"
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "content/banner.css"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
+    }
+  ],
+  "background": {
+    "service_worker": "background/background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "Site Dossier",
+    "default_icon": {
+      "16": "icons/16.png",
+      "48": "icons/48.png",
+      "128": "icons/128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/16.png",
+    "48": "icons/48.png",
+    "128": "icons/128.png"
+  },
+  "minimum_chrome_version": "116"
+}
