@@ -187,7 +187,11 @@ test('bundles merge only for the same URL and tags remain strings', async () => 
   });
   const one = await writeBundle(payload('https://example.com/one'));
   const two = await writeBundle(payload('https://example.com/two'));
-  const repeat = await writeBundle(payload('https://example.com/one'));
+  const repeatedPayload = {
+    ...payload('https://example.com/one'),
+    note: 'mobile navigation', tags: ['navigation'], tokens: { colors: ['#123456'] }
+  };
+  const repeat = await writeBundle(repeatedPayload);
   assert.equal(one.folderName, 'example-com-2026-09-25');
   assert.equal(two.folderName, 'example-com-2026-09-25-2');
   assert.equal(repeat.folderName, one.folderName);
@@ -195,6 +199,10 @@ test('bundles merge only for the same URL and tags remain strings', async () => 
   assert.equal(rootDir.dirs.get(one.folderName).files.get('url.txt').trim(), 'https://example.com/one');
   assert.match(rootDir.dirs.get(one.folderName).files.get('note.md'), /tags: \["x: y","\[nested\]"\]/);
   const saved = rootDir.dirs.get(one.folderName);
+  assert.match(saved.dirs.get('desktop-2').files.get('note.md') || '', /mobile navigation/);
+  assert.deepEqual(JSON.parse(saved.dirs.get('desktop-2').files.get('tokens.json') || '{}'), repeatedPayload.tokens);
+  assert.match(saved.dirs.get('desktop').files.get('note.md') || '', /hello/);
+  assert.match(saved.files.get('note.md'), /hello/);
   for (const file of ['url.txt', 'note.md', 'tokens.json']) assert.ok(saved.files.has(file), file);
   for (const file of ['scroll.webm', 'page.jpg', 'page.html', 'meta.json']) {
     assert.ok(saved.dirs.get('desktop').files.has(file), file);

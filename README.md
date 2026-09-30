@@ -33,6 +33,8 @@ The camera control stays visible throughout capture and saving. It appears in th
 
 Capturing the same URL on the same day adds another viewport folder to its bundle. A different URL on the same host gets a separate numbered bundle. Widths below 768 pixels are labelled mobile.
 
+Each viewport folder includes its own `note.md` and `tokens.json`, so repeated captures preserve their individual notes, tags, and styles. The bundle-root copies describe the first capture and remain available for existing workflows.
+
 ## Output
 
 ```text
@@ -42,6 +44,8 @@ selected-folder/
     ├── note.md
     ├── tokens.json
     └── desktop/
+        ├── note.md
+        ├── tokens.json
         ├── page.jpg
         ├── page.html
         ├── scroll.webm
