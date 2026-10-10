@@ -61,4 +61,6 @@ Captures can include private information visible on the page. Choose the page an
 
 Run `node scripts/verify.mjs` for the dependency-free checks. For a local Chrome Web Store candidate ZIP, run `python3 scripts/package.py`. It runs verification and writes `dist/site-dossier-<version>.zip` with only allowlisted extension files. For an actual release, use `python3 scripts/package.py --release`; that also requires a clean committed tree, tracked package files, and the Git-history privacy check across all local branches and tags.
 
+The privacy check accepts GitHub noreply identities and author metadata from explicitly reviewed public commits, pinned by their full commit hashes in `scripts/public-release-check.mjs`. Other personal commit addresses still require review; these exceptions never exempt file contents or private paths from the audit.
+
 Before a public release, test the ZIP as an unpacked extension in Chrome: run Auto and Manual captures, record manually for more than 30 seconds, switch tabs during saving, capture two URLs on one host, reopen Chrome and re-grant the output folder, and inspect every output file. Chrome Web Store submission has its own listing and privacy requirements.

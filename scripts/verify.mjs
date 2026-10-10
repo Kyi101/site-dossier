@@ -5,9 +5,64 @@ import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import test from 'node:test';
+import os from 'node:os';
+import { auditPublicRelease, isAllowedHistoryIdentity } from './public-release-check.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const read = file => fs.readFileSync(path.join(root, file), 'utf8');
+
+test('release identity exceptions are bound to reviewed commits and authors', () => {
+  const reviewed = 'b5ee10c1be2b9548b80fbbe36aa63cd2c2d8a734';
+  const unknown = '0'.repeat(40);
+  const owner = '123+example@users.noreply.github.com';
+  assert.ok(isAllowedHistoryIdentity(unknown, owner, owner));
+  assert.ok(isAllowedHistoryIdentity(unknown, 'example@users.noreply.github.com', 'noreply@github.com'));
+  assert.ok(isAllowedHistoryIdentity(unknown, '49699333+dependabot[bot]@users.noreply.github.com', 'noreply@github.com'));
+  assert.ok(isAllowedHistoryIdentity(reviewed, 'reviewed@example.invalid', 'noreply@github.com'));
+  assert.ok(!isAllowedHistoryIdentity(unknown, 'reviewed@example.invalid', 'noreply@github.com'));
+  assert.ok(!isAllowedHistoryIdentity(reviewed, owner, 'unreviewed@example.invalid'));
+  assert.ok(!isAllowedHistoryIdentity(unknown, owner, 'noreply@github.com.example.invalid'));
+});
+
+test('release audit still checks future identity and private content across every ref', () => {
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'site-dossier-release-audit-'));
+  const git = (...args) => {
+    const result = spawnSync('git', args, { cwd: fixture, encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  const commit = message => { git('add', '.'); git('commit', '-m', message); };
+  try {
+    git('init', '--initial-branch=main');
+    git('config', 'user.name', 'Release Test');
+    git('config', 'user.email', '123+example@users.noreply.github.com');
+    fs.writeFileSync(path.join(fixture, 'README.md'), 'Public source\n');
+    commit('Safe initial source');
+    assert.deepEqual(auditPublicRelease(fixture), []);
+    git('config', 'user.email', 'unreviewed@example.invalid');
+    assert.ok(auditPublicRelease(fixture).some(error => error.includes('Future commits')));
+    git('switch', '-c', 'unreviewed-history');
+    fs.writeFileSync(path.join(fixture, 'README.md'), 'Public source changed\n');
+    commit('Unreviewed contributor identity');
+    git('config', 'user.email', '123+example@users.noreply.github.com');
+    git('switch', 'main');
+    assert.ok(auditPublicRelease(fixture).some(error => error.includes('unreviewed author or committer')));
+    git('switch', '-c', 'private-history');
+    fs.writeFileSync(path.join(fixture, 'STATUS.md'), 'Private working notes\n');
+    fs.writeFileSync(path.join(fixture, 'README.md'), ['private', 'gmail.com'].join('@'));
+    git('add', '.');
+    const dirtyErrors = auditPublicRelease(fixture);
+    assert.ok(dirtyErrors.some(error => error.includes('still tracked: STATUS.md')));
+    assert.ok(dirtyErrors.some(error => error.includes('Publishable files contain personal path or email markers')));
+    git('commit', '-m', 'Historical private files');
+    git('switch', 'main');
+    const historicalErrors = auditPublicRelease(fixture);
+    assert.ok(historicalErrors.some(error => error.includes('Release-excluded paths in Git history: STATUS.md')));
+    assert.ok(historicalErrors.some(error => error.includes('Publishable files contain personal markers in Git history: README.md')));
+  } finally {
+    fs.rmSync(fixture, { recursive: true, force: true });
+  }
+});
 
 function backgroundHarness(shared = {}) {
   const listeners = [];
