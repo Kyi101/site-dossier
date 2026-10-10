@@ -184,8 +184,11 @@ async function writeBundle(payload) {
   await writeFile(viewportDir, 'scroll.webm', videoBlob);
   await writeFile(viewportDir, 'page.jpg', await dataUrlToBlob(payload.screenshot.dataUrl));
   await writeFile(viewportDir, 'page.html', new Blob([payload.html], { type: 'text/html' }));
+  // Each capture keeps its own context, including repeated and mobile captures.
+  await writeFile(viewportDir, 'note.md', new Blob([buildNoteMd(payload)]));
+  await writeFile(viewportDir, 'tokens.json', new Blob([JSON.stringify(payload.tokens, null, 2)]));
 
-  // Shared bundle-root files — write ONLY on first capture (not on merge).
+  // Preserve the original root files for existing bundle consumers.
   // Moved BEFORE the contact-sheet step so they're not at risk of stale-handle errors.
   if (!isMerge) {
     await writeFile(bundleDir, 'url.txt', new Blob([payload.url + '\n']));

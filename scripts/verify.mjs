@@ -167,7 +167,7 @@ class FakeDir {
   }
 }
 
-test('bundles merge only for the same URL and tags remain strings', async () => {
+test('repeated desktop and mobile captures preserve their own context and the first root copies', async () => {
   const rootDir = new FakeDir();
   const context = vm.createContext({
     rootDir, Blob, URL, fetch, setTimeout, clearTimeout,
@@ -186,16 +186,39 @@ test('bundles merge only for the same URL and tags remain strings', async () => 
     tags: ['x: y', '[nested]'], video: { dataUrl: 'data:video/webm;base64,AA==', durationS: 1, stopReason: 'user' },
     screenshot: { dataUrl: 'data:image/jpeg;base64,AA==', stopReason: 'page-end' }, html: '<html></html>', tokens: {}
   });
-  const one = await writeBundle(payload('https://example.com/one'));
+  const firstPayload = { ...payload('https://example.com/one'), tokens: { colors: ['#abcdef'] } };
+  const one = await writeBundle(firstPayload);
   const two = await writeBundle(payload('https://example.com/two'));
-  const repeat = await writeBundle(payload('https://example.com/one'));
+  const repeatedPayload = {
+    ...payload('https://example.com/one'),
+    note: 'desktop navigation', tags: ['navigation'], tokens: { colors: ['#123456'] }
+  };
+  const repeat = await writeBundle(repeatedPayload);
+  const mobilePayload = {
+    ...payload('https://example.com/one'), viewportName: 'mobile', viewportSize: { width: 390, height: 844 },
+    note: 'mobile menu', tags: ['mobile', 'menu'], tokens: { colors: ['#fedcba'] }
+  };
+  const mobile = await writeBundle(mobilePayload);
   assert.equal(one.folderName, 'example-com-2026-09-25');
   assert.equal(two.folderName, 'example-com-2026-09-25-2');
   assert.equal(repeat.folderName, one.folderName);
   assert.equal(repeat.viewport, 'desktop-2');
+  assert.equal(mobile.folderName, one.folderName);
+  assert.equal(mobile.viewport, 'mobile');
   assert.equal(rootDir.dirs.get(one.folderName).files.get('url.txt').trim(), 'https://example.com/one');
   assert.match(rootDir.dirs.get(one.folderName).files.get('note.md'), /tags: \["x: y","\[nested\]"\]/);
   const saved = rootDir.dirs.get(one.folderName);
+  assert.match(saved.dirs.get('desktop-2').files.get('note.md') || '', /desktop navigation/);
+  assert.match(saved.dirs.get('desktop-2').files.get('note.md'), /tags: \["navigation"\]/);
+  assert.deepEqual(JSON.parse(saved.dirs.get('desktop-2').files.get('tokens.json') || '{}'), repeatedPayload.tokens);
+  assert.match(saved.dirs.get('desktop').files.get('note.md') || '', /hello/);
+  assert.match(saved.dirs.get('desktop').files.get('note.md'), /tags: \["x: y","\[nested\]"\]/);
+  assert.deepEqual(JSON.parse(saved.dirs.get('desktop').files.get('tokens.json')), firstPayload.tokens);
+  assert.match(saved.dirs.get('mobile').files.get('note.md') || '', /mobile menu/);
+  assert.match(saved.dirs.get('mobile').files.get('note.md'), /tags: \["mobile","menu"\]/);
+  assert.deepEqual(JSON.parse(saved.dirs.get('mobile').files.get('tokens.json') || '{}'), mobilePayload.tokens);
+  assert.match(saved.files.get('note.md'), /hello/);
+  assert.deepEqual(JSON.parse(saved.files.get('tokens.json')), firstPayload.tokens);
   for (const file of ['url.txt', 'note.md', 'tokens.json']) assert.ok(saved.files.has(file), file);
   for (const file of ['scroll.webm', 'page.jpg', 'page.html', 'meta.json']) {
     assert.ok(saved.dirs.get('desktop').files.has(file), file);
