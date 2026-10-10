@@ -223,11 +223,13 @@ async function writeBundle(payload) {
     capture_mode: payload.mode || 'auto',
     video: {
       duration_s: payload.video.durationS || null,
+      stop_reason: payload.video.stopReason || null,
       file: 'scroll.webm',
       contact_sheet: contactSheetWritten ? 'scroll-sheet.png' : null,
       frames_sampled: contactSheetWritten ? 9 : 0
     },
-    tool_version: '0.1.0'
+    screenshot: { file: 'page.jpg', stop_reason: payload.screenshot.stopReason || null },
+    tool_version: chrome.runtime.getManifest().version
   };
   try {
     await writeFile(viewportDir, 'meta.json', new Blob([JSON.stringify(meta, null, 2)]));

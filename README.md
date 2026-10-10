@@ -25,9 +25,9 @@ Use **?** in the popup for a quick guide to capture modes, stopping, saving, and
 
 1. Open the page, click the toolbar icon, and choose a Windows folder. The picker starts in Downloads, then remembers the last chosen location. Browse to a subfolder if you want to save on Desktop.
 2. Add an optional note and comma-separated tags.
-3. The popup follows your system theme. Leave **Auto capture** selected and click **Start auto capture**. Site Dossier records video and takes screenshot tiles in one scroll pass, then stops by itself at the bottom or after 30 seconds. The camera flashes for each screenshot.
+3. The popup follows your system theme. Leave **Auto capture** selected and click **Start auto capture**. Site Dossier records video and takes screenshot tiles in one scroll pass, then stops by itself at the bottom or at the 3-minute limit. The camera flashes for each screenshot.
 4. For interactive sites, select **Manual recording** instead. Drive the page yourself, then use **Stop** on the camera control or **Stop recording** in the popup. After Stop, the page scrolls once automatically to take screenshots, then returns to your position. Manual recording also stops after 180 seconds.
-5. Keep the captured tab active while **Saving capture…** is shown. Auto assembles the JPEG from the tiles already captured; Manual scrolls the final page for its JPEG. The camera control shows a saved or failed result afterward.
+5. Keep the captured tab active while **Saving capture…** is shown. Auto assembles the JPEG from the tiles already captured; Manual scrolls the final page for its JPEG, allowing up to 3 minutes for long pages. The camera control shows a saved or failed result afterward and flags time limits or blocked scrolling. Each viewport's `meta.json` records why recording and screenshot scrolling stopped.
 
 The camera control stays visible throughout capture and saving. It appears in the saved JPEG and video; the HTML snapshot excludes it.
 
