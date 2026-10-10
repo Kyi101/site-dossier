@@ -167,13 +167,14 @@ class FakeDir {
   }
 }
 
-test('bundles merge only for the same URL and tags remain strings', async () => {
+test('repeated desktop and mobile captures preserve their own context and the first root copies', async () => {
   const rootDir = new FakeDir();
   const context = vm.createContext({
     rootDir, Blob, URL, fetch, setTimeout, clearTimeout,
     document: { getElementById: () => ({ textContent: '' }), createElement: () => { throw new Error('no video decoder in test'); } },
     BroadcastChannel: class { set onmessage(_value) {} },
-    chrome: { runtime: { onMessage: { addListener() {} }, getURL: value => value } },
+    chrome: { runtime: { onMessage: { addListener() {} }, getURL: value => value,
+      getManifest: () => JSON.parse(read('manifest.json')) } },
     console: { warn() {}, log() {} }
   });
   vm.runInContext(read('offscreen/offscreen.js'), context);
@@ -182,32 +183,51 @@ test('bundles merge only for the same URL and tags remain strings', async () => 
   const payload = url => ({
     url, startedAt: '2026-09-25T12:00:00Z', viewportName: 'desktop',
     viewportSize: { width: 1000, height: 800 }, note: 'hello',
-    tags: ['x: y', '[nested]'], video: { dataUrl: 'data:video/webm;base64,AA==', durationS: 1 },
-    screenshot: { dataUrl: 'data:image/jpeg;base64,AA==' }, html: '<html></html>', tokens: {}
+    tags: ['x: y', '[nested]'], video: { dataUrl: 'data:video/webm;base64,AA==', durationS: 1, stopReason: 'user' },
+    screenshot: { dataUrl: 'data:image/jpeg;base64,AA==', stopReason: 'page-end' }, html: '<html></html>', tokens: {}
   });
-  const one = await writeBundle(payload('https://example.com/one'));
+  const firstPayload = { ...payload('https://example.com/one'), tokens: { colors: ['#abcdef'] } };
+  const one = await writeBundle(firstPayload);
   const two = await writeBundle(payload('https://example.com/two'));
   const repeatedPayload = {
     ...payload('https://example.com/one'),
-    note: 'mobile navigation', tags: ['navigation'], tokens: { colors: ['#123456'] }
+    note: 'desktop navigation', tags: ['navigation'], tokens: { colors: ['#123456'] }
   };
   const repeat = await writeBundle(repeatedPayload);
+  const mobilePayload = {
+    ...payload('https://example.com/one'), viewportName: 'mobile', viewportSize: { width: 390, height: 844 },
+    note: 'mobile menu', tags: ['mobile', 'menu'], tokens: { colors: ['#fedcba'] }
+  };
+  const mobile = await writeBundle(mobilePayload);
   assert.equal(one.folderName, 'example-com-2026-09-25');
   assert.equal(two.folderName, 'example-com-2026-09-25-2');
   assert.equal(repeat.folderName, one.folderName);
   assert.equal(repeat.viewport, 'desktop-2');
+  assert.equal(mobile.folderName, one.folderName);
+  assert.equal(mobile.viewport, 'mobile');
   assert.equal(rootDir.dirs.get(one.folderName).files.get('url.txt').trim(), 'https://example.com/one');
   assert.match(rootDir.dirs.get(one.folderName).files.get('note.md'), /tags: \["x: y","\[nested\]"\]/);
   const saved = rootDir.dirs.get(one.folderName);
-  assert.match(saved.dirs.get('desktop-2').files.get('note.md') || '', /mobile navigation/);
+  assert.match(saved.dirs.get('desktop-2').files.get('note.md') || '', /desktop navigation/);
+  assert.match(saved.dirs.get('desktop-2').files.get('note.md'), /tags: \["navigation"\]/);
   assert.deepEqual(JSON.parse(saved.dirs.get('desktop-2').files.get('tokens.json') || '{}'), repeatedPayload.tokens);
   assert.match(saved.dirs.get('desktop').files.get('note.md') || '', /hello/);
+  assert.match(saved.dirs.get('desktop').files.get('note.md'), /tags: \["x: y","\[nested\]"\]/);
+  assert.deepEqual(JSON.parse(saved.dirs.get('desktop').files.get('tokens.json')), firstPayload.tokens);
+  assert.match(saved.dirs.get('mobile').files.get('note.md') || '', /mobile menu/);
+  assert.match(saved.dirs.get('mobile').files.get('note.md'), /tags: \["mobile","menu"\]/);
+  assert.deepEqual(JSON.parse(saved.dirs.get('mobile').files.get('tokens.json') || '{}'), mobilePayload.tokens);
   assert.match(saved.files.get('note.md'), /hello/);
+  assert.deepEqual(JSON.parse(saved.files.get('tokens.json')), firstPayload.tokens);
   for (const file of ['url.txt', 'note.md', 'tokens.json']) assert.ok(saved.files.has(file), file);
   for (const file of ['scroll.webm', 'page.jpg', 'page.html', 'meta.json']) {
     assert.ok(saved.dirs.get('desktop').files.has(file), file);
   }
-  assert.equal(JSON.parse(saved.dirs.get('desktop').files.get('meta.json')).capture_mode, 'auto');
+  const meta = JSON.parse(saved.dirs.get('desktop').files.get('meta.json'));
+  assert.equal(meta.capture_mode, 'auto');
+  assert.equal(meta.video.stop_reason, 'user');
+  assert.equal(meta.screenshot.stop_reason, 'page-end');
+  assert.equal(meta.tool_version, JSON.parse(read('manifest.json')).version);
 });
 
 test('last screenshot tile uses actual clamped scroll position', async () => {
@@ -458,7 +478,7 @@ test('failed Stop leaves recording retryable', async () => {
   assert.equal(app.state.get('capture').phase, 'recording');
 });
 
-function contentControlHarness({ screenshotError = null } = {}) {
+function contentControlHarness({ screenshotError = null, pageHeight = 2200, growingPage = false, scrollBlocked = false } = {}) {
   const listeners = [];
   const messages = [];
   const timers = new Map();
@@ -481,7 +501,7 @@ function contentControlHarness({ screenshotError = null } = {}) {
     scrollTo(x, y) {
       this.scrollX = typeof x === 'object' ? x.left || 0 : x;
       const top = typeof x === 'object' ? x.top : y;
-      this.scrollY = Math.max(0, Math.min(top, 1200));
+      this.scrollY = scrollBlocked ? 0 : Math.max(0, Math.min(top, document.documentElement.scrollHeight - this.innerHeight));
       scrolls.push(this.scrollY);
     }
   };
@@ -493,10 +513,10 @@ function contentControlHarness({ screenshotError = null } = {}) {
   const document = {
     location: { href: 'https://example.com/' }, baseURI: 'https://example.com/', styleSheets: [],
     documentElement: {
-      scrollWidth: 1000, scrollHeight: 2200, dataset: {},
+      scrollWidth: 1000, scrollHeight: pageHeight, dataset: {},
       appendChild(element) { bannerHost = element; return element; }
     },
-    body: { scrollWidth: 1000, scrollHeight: 2200 },
+    body: { scrollWidth: 1000, scrollHeight: pageHeight },
     querySelectorAll() { return []; }, querySelector() { return null; },
     getElementById(id) { return id === 'site-dossier-root' ? bannerHost : null; },
     cloneNode() {
@@ -554,6 +574,7 @@ function contentControlHarness({ screenshotError = null } = {}) {
         messages.push(message);
         if (message.type === 'CAPTURE_VISIBLE_TAB') {
           Promise.resolve().then(() => {
+            if (growingPage) document.documentElement.scrollHeight += 1000;
             assert.equal(bannerHost.popoverOpen, true, 'control must stay in the top layer during screenshots');
             assert.equal(banner.style.getPropertyValue('opacity'), '');
             assert.equal(banner.style.getPropertyValue('visibility'), '');
@@ -593,10 +614,15 @@ function contentControlHarness({ screenshotError = null } = {}) {
     return true;
   };
   const runUntil = async predicate => {
-    for (let i = 0; i < 60 && !predicate(); i++) assert.equal(await runNext(), true);
+    for (let i = 0; i < 1000 && !predicate(); i++) assert.equal(await runNext(), true);
     assert.ok(predicate(), 'capture did not reach expected state');
   };
-  return { send, runNext, runUntil, messages, scrolls, flashes, controlRemovals, window,
+  const advance = async ms => {
+    const end = now + ms;
+    while ([...timers.values()].some(entry => entry.due <= end)) await runNext();
+    now = end;
+  };
+  return { send, runNext, runUntil, advance, messages, scrolls, flashes, controlRemovals, window,
     get banner() { return banner; }, get bannerHost() { return bannerHost; },
     get recorder() { return recorder; }, get tracksStopped() { return tracksStopped; } };
 }
@@ -652,6 +678,91 @@ test('Manual waits for Stop, then captures the final page and restores its posit
   assert.deepEqual(manual.scrolls, [0, 1000, 1200, 400]);
   assert.equal(manual.flashes.length, 3);
   assert.equal(manual.controlRemovals.length, 0);
+});
+
+test('Auto reaches the end of a long page beyond the former 30-second cutoff', async () => {
+  const auto = contentControlHarness({ pageHeight: 50000 });
+  await auto.send({ type: 'INJECT_BANNER' });
+  await auto.send({ type: 'START_RECORDING', streamId: 'stream', mode: 'auto' });
+  await auto.runUntil(() => auto.banner.dataset.state === 'saved');
+  assert.equal(auto.window.scrollY, 49000);
+  assert.equal(auto.flashes.length, 50);
+  const bundle = auto.messages.find(message => message.type === 'CAPTURE_BUNDLE_READY');
+  assert.ok(bundle.video.durationS > 30);
+  assert.equal(bundle.video.stopReason, 'page-end');
+  assert.equal(bundle.screenshot.stopReason, 'page-end');
+});
+
+test('Manual records beyond 30 seconds and completes a long screenshot pass after Stop', async () => {
+  const manual = contentControlHarness({ pageHeight: 50000 });
+  await manual.send({ type: 'INJECT_BANNER' });
+  await manual.send({ type: 'START_RECORDING', streamId: 'stream', mode: 'manual' });
+  await manual.advance(40000);
+  assert.equal(manual.recorder.state, 'recording');
+  assert.equal(manual.scrolls.length, 0);
+  manual.window.scrollY = 7000;
+  await manual.send({ type: 'STOP_RECORDING' });
+  await new Promise(resolve => setImmediate(resolve));
+  await manual.runUntil(() => manual.banner.dataset.state === 'saved');
+  assert.equal(manual.flashes.length, 50);
+  assert.equal(manual.window.scrollY, 7000);
+  const bundle = manual.messages.find(message => message.type === 'CAPTURE_BUNDLE_READY');
+  assert.equal(bundle.video.durationS, 40, 'post-stop screenshots must not extend video duration');
+  assert.equal(bundle.video.stopReason, 'user');
+  assert.equal(bundle.screenshot.stopReason, 'page-end');
+});
+
+test('Manual keeps the 180-second cap and explains it in the saved result', async () => {
+  const manual = contentControlHarness();
+  await manual.send({ type: 'INJECT_BANNER' });
+  await manual.send({ type: 'START_RECORDING', streamId: 'stream', mode: 'manual' });
+  await manual.advance(179000);
+  assert.equal(manual.recorder.state, 'recording');
+  await manual.advance(1000);
+  assert.equal(manual.recorder.state, 'inactive');
+  await manual.runUntil(() => manual.banner.dataset.state === 'saved');
+  const bundle = manual.messages.find(message => message.type === 'CAPTURE_BUNDLE_READY');
+  assert.equal(bundle.video.durationS, 180);
+  assert.equal(bundle.video.stopReason, 'time-limit');
+  assert.match(manual.banner.querySelector('.state').textContent, /3-minute limit/);
+});
+
+test('Auto on an endlessly growing page remains bounded and reports a partial capture', async () => {
+  const auto = contentControlHarness({ growingPage: true });
+  await auto.send({ type: 'INJECT_BANNER' });
+  await auto.send({ type: 'START_RECORDING', streamId: 'stream', mode: 'auto' });
+  await auto.runUntil(() => auto.banner.dataset.state === 'saved');
+  const bundle = auto.messages.find(message => message.type === 'CAPTURE_BUNDLE_READY');
+  assert.equal(bundle.video.durationS, 180);
+  assert.equal(bundle.video.stopReason, 'time-limit');
+  assert.notEqual(bundle.screenshot.stopReason, 'page-end');
+  assert.match(auto.banner.querySelector('.state').textContent, /limit|partial/i);
+  assert.equal(auto.tracksStopped, true);
+});
+
+test('Blocked scrolling saves the available tiles with a visible partial-result warning', async () => {
+  const auto = contentControlHarness({ pageHeight: 5000, scrollBlocked: true });
+  await auto.send({ type: 'INJECT_BANNER' });
+  await auto.send({ type: 'START_RECORDING', streamId: 'stream', mode: 'auto' });
+  await auto.runUntil(() => auto.banner.dataset.state === 'saved');
+  const bundle = auto.messages.find(message => message.type === 'CAPTURE_BUNDLE_READY');
+  assert.equal(bundle.screenshot.stopReason, 'scroll-blocked');
+  assert.match(auto.banner.querySelector('.state').textContent, /partial screenshot/);
+});
+
+test('A stream ending independently records its actual duration and explains the interruption', async () => {
+  const manual = contentControlHarness();
+  await manual.send({ type: 'INJECT_BANNER' });
+  await manual.send({ type: 'START_RECORDING', streamId: 'stream', mode: 'manual' });
+  await manual.advance(40000);
+  manual.recorder.stop(); // Simulate Chrome ending the stream without our Stop handler.
+  await new Promise(resolve => setImmediate(resolve));
+  assert.ok(manual.messages.some(message => message.type === 'CAPTURE_PROCESSING'));
+  await manual.runUntil(() => manual.banner.dataset.state === 'saved');
+  const bundle = manual.messages.find(message => message.type === 'CAPTURE_BUNDLE_READY');
+  assert.equal(bundle.video.durationS, 40);
+  assert.equal(bundle.video.stopReason, 'stream-ended');
+  assert.match(manual.banner.querySelector('.state').textContent, /recording ended/);
 });
 
 test('Auto screenshot failure stops recording and shows failure without rescanning', async () => {

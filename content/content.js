@@ -13,6 +13,7 @@
   let shotCount = 0;
   let startedAt = null;
   let stoppedAt = null;
+  let recordingStopReason = null;
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === 'INJECT_BANNER') {
@@ -69,7 +70,7 @@
     document.documentElement.appendChild(bannerHost);
     bannerHost.showPopover();
     startedAt = Date.now();
-    banner.querySelector('button').addEventListener('click', stopCapture);
+    banner.querySelector('button').addEventListener('click', () => stopCapture());
   }
 
   const SAFETY_CAP_S = 180;
@@ -97,11 +98,12 @@
     banner.querySelector('.timer').hidden = state !== 'recording';
   }
 
-  function stopCapture() {
+  function stopCapture(reason = 'user') {
     if (!recorder || recorder.state !== 'recording') return false;
     stoppedAt = Date.now();
+    recordingStopReason = reason;
     recorder.stop();
-    setBannerState('saving', 'Saving capture…');
+    setBannerState('saving', reason === 'time-limit' ? '3-minute limit — saving…' : 'Saving capture…');
     if (timerInterval) clearInterval(timerInterval);
     timerInterval = null;
     chrome.runtime.sendMessage({ type: 'CAPTURE_PROCESSING' }, () => {
@@ -175,12 +177,26 @@
     recordedChunks = [];
     shotCount = 0;
     stoppedAt = null;
+    recordingStopReason = null;
+    let screenshotStopReason = null;
     let screenshotTask = null;
     recorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp9' });
     recorder.ondataavailable = (e) => {
       if (e.data && e.data.size > 0) recordedChunks.push(e.data);
     };
     recorder.onstop = async () => {
+      // A capture stream can end independently of our Stop button/timer.
+      // Record its actual end before the screenshot pass adds processing time.
+      if (!recordingStopReason) {
+        stoppedAt = Date.now();
+        recordingStopReason = 'stream-ended';
+        setBannerState('saving', 'Recording ended — saving…');
+        chrome.runtime.sendMessage({ type: 'CAPTURE_PROCESSING' }, () => {
+          if (chrome.runtime.lastError) console.warn('[design-capture] status update failed:', chrome.runtime.lastError.message);
+        });
+      }
+      if (timerInterval) clearInterval(timerInterval);
+      timerInterval = null;
       try {
         console.log('[design-capture] onstop: building blob (chunks:', recordedChunks.length, ')');
         const blob = new Blob(recordedChunks, { type: 'video/webm' });
@@ -213,7 +229,9 @@
         if (!screenshotResult) {
           setBannerState('saving', 'Taking page screenshots…', 'Scrolling the page automatically');
         }
-        const screenshotDataUrl = screenshotResult?.dataUrl || await captureFullPagePng({ chunkPause: 600 });
+        const screenshotDataUrl = screenshotResult?.dataUrl || await captureFullPagePng({
+          chunkPause: 600, onScrollComplete: reason => { screenshotStopReason = reason; }
+        });
         setBannerState('saving', 'Saving capture…', 'Preparing files');
         console.log('[design-capture] onstop: screenshot done');
 
@@ -227,8 +245,8 @@
           try {
             chrome.runtime.sendMessage({
               type: 'CAPTURE_BUNDLE_READY',
-              video: { dataUrl: videoDataUrl, size: blob.size, durationS },
-              screenshot: { dataUrl: screenshotDataUrl },
+              video: { dataUrl: videoDataUrl, size: blob.size, durationS, stopReason: recordingStopReason },
+              screenshot: { dataUrl: screenshotDataUrl, stopReason: screenshotStopReason },
               html: htmlSnapshot,
               tokens
             }, (res) => {
@@ -249,7 +267,10 @@
           throw new Error(response.error || 'bundle write failed');
         }
         console.log('[design-capture] onstop: bundle written');
-        setBannerState('saved', 'Saved', `${response.result.folderName}/${response.result.viewport}`);
+        const label = recordingStopReason === 'time-limit' ? 'Saved — 3-minute limit' :
+          recordingStopReason === 'stream-ended' ? 'Saved — recording ended' :
+          ['time-limit', 'scroll-blocked'].includes(screenshotStopReason) ? 'Saved — partial screenshot' : 'Saved';
+        setBannerState('saved', label, `${response.result.folderName}/${response.result.viewport}`);
         scheduleBannerRemoval(8000, 'saved');
       } catch (err) {
         console.error('[design-capture] onstop FAILED:', err);
@@ -270,16 +291,19 @@
     dismissTimer = null;
     recorder.start();
     startedAt = Date.now();
-    setBannerState('recording', mode === 'manual' ? 'Manual recording' : 'Auto capture', mode === 'manual' ? '' : '0 screenshots');
+    setBannerState('recording', mode === 'manual' ? 'Manual recording' : 'Auto capture', mode === 'manual' ? 'Stops at 3 minutes' : '0 screenshots');
     timerInterval = setInterval(updateTimer, 200);
     const activeRecorder = recorder;
     if (mode !== 'manual') {
       screenshotTask = captureFullPagePng({
-        chunkPause: 900, timeBudgetMs: 30000, smoothScroll: true, restoreScroll: false,
+        chunkPause: 900, smoothScroll: true, restoreScroll: false,
         shouldStop: () => activeRecorder.state !== 'recording',
-        onScrollComplete: () => { if (recorder === activeRecorder) stopCapture(); }
+        onScrollComplete: reason => {
+          screenshotStopReason = reason;
+          if (recorder === activeRecorder) stopCapture(reason);
+        }
       }).then(dataUrl => ({ dataUrl }), error => ({ error }));
-      screenshotTask.then(() => { if (recorder === activeRecorder) stopCapture(); });
+      screenshotTask.then(() => { if (recorder === activeRecorder) stopCapture('capture-error'); });
     }
     // 180s safety cap — auto-stop if user forgets.
     // Past ~2 minutes the data-URL'd webm risks the chrome.runtime.sendMessage
@@ -290,7 +314,7 @@
     setTimeout(() => {
       if (recorder === activeRecorder && recorder.state === 'recording') {
         console.log(`[design-capture] safety cap reached at ${SAFETY_CAP_S}s, auto-stopping`);
-        stopCapture();
+        stopCapture('time-limit');
       }
     }, SAFETY_CAP_S * 1000);
   }
@@ -308,7 +332,7 @@
     });
   }
 
-  async function captureFullPagePng({ chunkPause = 600, timeBudgetMs = 15000,
+  async function captureFullPagePng({ chunkPause = 600, timeBudgetMs = SAFETY_CAP_S * 1000,
     smoothScroll = false, restoreScroll = true, shouldStop = () => false, onScrollComplete = () => {} } = {}) {
     const startTime = Date.now();
     const deadline = startTime + timeBudgetMs;
@@ -338,15 +362,15 @@
       { viewportWidth, viewportHeight, initial, pixelRatio, timeBudgetMs });
 
     const slices = [];
-    let stoppedReason = null;
+    let stoppedReason = 'page-end';
     let scrollStuckCount = 0; // detect smooth-scroll libs blocking window.scrollTo
 
     try {
       let y = 0;
       outer: while (true) {
-        if (slices.length && shouldStop()) break;
+        if (slices.length && shouldStop()) { stoppedReason = 'stopped'; break; }
         if (Date.now() > deadline) {
-          stoppedReason = `time budget ${timeBudgetMs}ms exceeded`;
+          stoppedReason = 'time-limit';
           break;
         }
         const { height: fullHeight } = measureFullSize();
@@ -354,9 +378,9 @@
 
         let x = 0;
         while (true) {
-          if (slices.length && shouldStop()) break outer;
+          if (slices.length && shouldStop()) { stoppedReason = 'stopped'; break outer; }
           if (Date.now() > deadline) {
-            stoppedReason = `time budget ${timeBudgetMs}ms exceeded`;
+            stoppedReason = 'time-limit';
             break outer;
           }
           const { width: fullWidth } = measureFullSize();
@@ -378,7 +402,7 @@
               { requested: { x: targetX, y: targetY }, actual: { x: actualX, y: actualY } });
             scrollStuckCount++;
             if (scrollStuckCount >= 2 && slices.length > 0) {
-              stoppedReason = 'scroll did not advance — page likely uses a smooth-scroll library that blocks window.scrollTo';
+              stoppedReason = 'scroll-blocked';
               break outer;
             }
           } else {
@@ -421,14 +445,14 @@
       });
       if (walked) {
         usedWideTrack = true;
-        stoppedReason = (stoppedReason ? stoppedReason + '; ' : '') + 'wide-track fallback ran';
+        stoppedReason = walked;
       }
     }
 
     console.log('[design-capture] captureFullPagePng done',
       { slices: slices.length, elapsedMs: Date.now() - startTime, stoppedReason });
 
-    onScrollComplete();
+    onScrollComplete(stoppedReason);
     if (slices.length === 0) throw new Error('No screenshot slices captured.');
 
     const capturedX = slices.reduce((m, slice) => Math.max(m, slice.x), 0) + viewportWidth;
@@ -508,10 +532,10 @@
     try {
       const steps = Math.ceil(found.width / viewportWidth);
       for (let i = 0; i < steps; i++) {
-        if (slices.length && shouldStop()) break;
+        if (slices.length && shouldStop()) return 'stopped';
         if (Date.now() > deadline) {
           console.log('[design-capture] wide-track fallback: time budget exceeded at step', i);
-          break;
+          return 'time-limit';
         }
         const tx = i * viewportWidth;
         // !important so the site's own RAF loop doesn't immediately overwrite us
@@ -530,7 +554,7 @@
         }
         slices.push({ x: i * viewportWidth, y: 0, dataUrl });
       }
-      return true;
+      return 'page-end';
     } finally {
       if (originalInline) {
         found.el.style.setProperty('transform', originalInline, originalPriority);

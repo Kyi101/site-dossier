@@ -135,8 +135,8 @@ function render() {
   } else {
     setBadge('', 'neutral');
     guidanceEl.textContent = manualModeEl.checked
-      ? 'You control the page and stop when ready.'
-      : 'The page scrolls, records, and saves automatically.';
+      ? 'You control the page. Stop when ready; 3-minute limit.'
+      : 'Scrolls to the bottom and saves; 3-minute limit.';
   }
 }
 
