@@ -232,7 +232,7 @@ async function writeBundle(payload) {
       frames_sampled: contactSheetWritten ? 9 : 0
     },
     screenshot: { file: 'page.jpg', stop_reason: payload.screenshot.stopReason || null },
-    tool_version: chrome.runtime.getManifest().version
+    tool_version: payload.toolVersion
   };
   try {
     await writeFile(viewportDir, 'meta.json', new Blob([JSON.stringify(meta, null, 2)]));

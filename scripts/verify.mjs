@@ -80,6 +80,7 @@ function backgroundHarness(shared = {}) {
   const chrome = {
     runtime: {
       id: 'test-extension',
+      getManifest: () => JSON.parse(read('manifest.json')),
       onMessage: { addListener(fn) { listeners.push(fn); } },
       getURL(value) { return 'chrome-extension://test/' + value; },
       async getContexts() { return [{}]; },
@@ -174,6 +175,7 @@ test('capture details survive a service worker restart and write failures reach 
   assert.equal(response.ok, false);
   assert.equal(response.error, 'disk full');
   assert.equal(secondWorker.offscreenWrites[0].payload.note, 'layout');
+  assert.equal(secondWorker.offscreenWrites[0].payload.toolVersion, JSON.parse(read('manifest.json')).version);
   assert.equal(shared.state.has('capture'), false);
 });
 
@@ -228,8 +230,8 @@ test('repeated desktop and mobile captures preserve their own context and the fi
     rootDir, Blob, URL, fetch, setTimeout, clearTimeout,
     document: { getElementById: () => ({ textContent: '' }), createElement: () => { throw new Error('no video decoder in test'); } },
     BroadcastChannel: class { set onmessage(_value) {} },
-    chrome: { runtime: { onMessage: { addListener() {} }, getURL: value => value,
-      getManifest: () => JSON.parse(read('manifest.json')) } },
+    // Real offscreen documents expose runtime messaging, but not getManifest.
+    chrome: { runtime: { onMessage: { addListener() {} }, getURL: value => value } },
     console: { warn() {}, log() {} }
   });
   vm.runInContext(read('offscreen/offscreen.js'), context);
@@ -237,6 +239,7 @@ test('repeated desktop and mobile captures preserve their own context and the fi
   const writeBundle = vm.runInContext('writeBundle', context);
   const payload = url => ({
     url, startedAt: '2026-09-25T12:00:00Z', viewportName: 'desktop',
+    toolVersion: JSON.parse(read('manifest.json')).version,
     viewportSize: { width: 1000, height: 800 }, note: 'hello',
     tags: ['x: y', '[nested]'], video: { dataUrl: 'data:video/webm;base64,AA==', durationS: 1, stopReason: 'user' },
     screenshot: { dataUrl: 'data:image/jpeg;base64,AA==', stopReason: 'page-end' }, html: '<html></html>', tokens: {}

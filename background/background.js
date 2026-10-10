@@ -244,6 +244,7 @@ async function handleBundleReady(message, sender) {
     const response = await sendToOffscreen({
       type: 'OFFSCREEN_WRITE_BUNDLE',
       payload: {
+        toolVersion: chrome.runtime.getManifest().version,
         url: capture.url,
         note: capture.note,
         tags: capture.tags,
