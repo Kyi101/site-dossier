@@ -333,10 +333,12 @@ test('last screenshot tile uses actual clamped scroll position', async () => {
 });
 
 async function popupHarness({ tabUrl = 'https://example.com/one', savedHandle = null, activeCapture = null,
-  startResponse = { ok: true }, stopResponse = { ok: true }, statusGate = null, waitForReady = true } = {}) {
+  startResponse = { ok: true }, stopResponse = { ok: true }, statusGate = null, waitForReady = true,
+  folderSetup = false, sharedConfig = null, pickerError = null, createTabError = null } = {}) {
   const elements = new Map();
   const messages = [];
   const pickerOptions = [];
+  const createdTabs = [];
   let closed = false;
   const element = id => {
     if (!elements.has(id)) {
@@ -348,7 +350,7 @@ async function popupHarness({ tabUrl = 'https://example.com/one', savedHandle = 
     }
     return elements.get(id);
   };
-  const config = new Map(savedHandle ? [['inspoDirHandle', savedHandle]] : []);
+  const config = sharedConfig || new Map(savedHandle ? [['inspoDirHandle', savedHandle]] : []);
   const db = {
     transaction() {
       const tx = {
@@ -379,8 +381,12 @@ async function popupHarness({ tabUrl = 'https://example.com/one', savedHandle = 
       }
     },
     chrome: {
-      tabs: { async query() { return [{ id: 4, url: tabUrl, title: 'Example design', width: 1200, height: 800 }]; } },
+      tabs: {
+        async query() { return [{ id: 4, url: tabUrl, title: 'Example design', width: 1200, height: 800 }]; },
+        async create(options) { if (createTabError) throw createTabError; createdTabs.push(options); return { id: 9 }; }
+      },
       runtime: {
+        getURL: value => 'chrome-extension://test/' + value,
         async sendMessage(message) {
           messages.push(message);
           if (message.type === 'CAPTURE_STATUS') {
@@ -394,7 +400,8 @@ async function popupHarness({ tabUrl = 'https://example.com/one', savedHandle = 
       }
     },
     window: {
-      async showDirectoryPicker(options) { pickerOptions.push(options); return savedHandle || handle; },
+      location: { href: 'chrome-extension://test/popup/popup.html' + (folderSetup ? '?folder-setup' : '') },
+      async showDirectoryPicker(options) { pickerOptions.push(options); if (pickerError) throw pickerError; return savedHandle || handle; },
       close() { closed = true; }
     },
     BroadcastChannel: class {
@@ -410,17 +417,30 @@ async function popupHarness({ tabUrl = 'https://example.com/one', savedHandle = 
   };
   await vm.runInNewContext(`(async () => { ${read('popup/popup.js')} })()`, context);
   if (waitForReady) await new Promise(resolve => setImmediate(resolve));
-  return { element, messages, pickerOptions, document: context.document, get closed() { return closed; } };
+  return { element, messages, pickerOptions, createdTabs, config, document: context.document, get closed() { return closed; } };
 }
 
-test('popup guides folder setup and sends the chosen page context', async () => {
-  const popup = await popupHarness();
+test('folder setup survives in a separate tab and the next popup uses its saved handle', async () => {
+  let popup = await popupHarness();
   assert.equal(popup.element('start').disabled, true);
   assert.equal(popup.element('state-badge').textContent, 'Select folder');
   await popup.element('pick-dir').click();
-  assert.equal(popup.pickerOptions[0].startIn, 'downloads');
-  assert.equal(popup.pickerOptions[0].id, 'site-dossier-local');
-  assert.equal(popup.pickerOptions[0].mode, 'readwrite');
+  assert.equal(popup.closed, true);
+  assert.equal(popup.pickerOptions.length, 0, 'native picker must never run in the toolbar popup');
+  assert.equal(popup.createdTabs[0].url, 'chrome-extension://test/popup/popup.html?folder-setup');
+  assert.equal(popup.createdTabs[0].openerTabId, 4);
+  const setup = await popupHarness({ folderSetup: true, sharedConfig: popup.config, tabUrl: popup.createdTabs[0].url });
+  assert.equal(setup.element('start').hidden, true);
+  assert.equal(setup.element('folder-done').hidden, false);
+  await setup.element('pick-dir').click();
+  assert.equal(setup.pickerOptions[0].startIn, 'downloads');
+  assert.equal(setup.pickerOptions[0].id, 'site-dossier-local');
+  assert.equal(setup.pickerOptions[0].mode, 'readwrite');
+  assert.equal(setup.closed, false, 'setup tab remains until the user chooses Done');
+  assert.equal(setup.element('state-badge').textContent, 'Folder selected');
+  await setup.element('folder-done').click();
+  assert.equal(setup.closed, true);
+  popup = await popupHarness({ sharedConfig: setup.config });
   assert.equal(popup.element('folder-name').textContent, 'Design references');
   assert.equal(popup.element('start').disabled, false);
   assert.equal(popup.element('state-badge').hidden, true);
@@ -434,6 +454,26 @@ test('popup guides folder setup and sends the chosen page context', async () => 
   assert.deepEqual(Array.from(start.tags), ['type', 'motion']);
   assert.equal(start.viewportName, 'desktop');
   assert.equal(start.mode, 'auto');
+});
+
+test('cancelled folder setup preserves the existing destination and remains usable', async () => {
+  const handle = { name: 'Existing folder', async queryPermission() { return 'granted'; } };
+  const setup = await popupHarness({ folderSetup: true, savedHandle: handle,
+    pickerError: Object.assign(new Error('Cancelled'), { name: 'AbortError' }) });
+  await setup.element('pick-dir').click();
+  assert.equal(setup.config.get('inspoDirHandle'), handle);
+  assert.equal(setup.element('folder-name').textContent, 'Existing folder');
+  assert.equal(setup.element('pick-dir').disabled, false);
+  assert.equal(setup.element('message').hidden, true);
+  assert.equal(setup.closed, false);
+});
+
+test('failure to open folder setup stays visible in the original popup', async () => {
+  const popup = await popupHarness({ createTabError: new Error('Could not open tab') });
+  await popup.element('pick-dir').click();
+  assert.equal(popup.closed, false);
+  assert.match(popup.element('message').textContent, /Could not open tab/);
+  assert.equal(popup.element('pick-dir').disabled, false);
 });
 
 test('popup blocks restricted pages and concurrent captures', async () => {
@@ -839,7 +879,7 @@ test('Auto screenshot failure stops recording and shows failure without rescanni
 test('folder picker is usable while capture status is still loading', async () => {
   let releaseStatus;
   const statusGate = new Promise(resolve => { releaseStatus = resolve; });
-  const popup = await popupHarness({ statusGate, waitForReady: false });
+  const popup = await popupHarness({ statusGate, waitForReady: false, folderSetup: true });
   assert.equal(popup.element('pick-dir').disabled, false);
   await popup.element('pick-dir').click();
   assert.equal(popup.pickerOptions[0].startIn, 'downloads');

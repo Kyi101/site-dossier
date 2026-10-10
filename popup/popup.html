@@ -20,6 +20,10 @@
     </header>
 
     <div id="capture-view">
+      <div id="folder-setup-intro" class="folder-setup-intro" hidden>
+        <h1>Choose a save folder</h1>
+        <p>Select a folder for your captures, then return to your page.</p>
+      </div>
       <p class="target-line"><span>Page</span><strong id="page-host">Checking…</strong></p>
 
       <section class="section" aria-labelledby="folder-heading">
@@ -53,6 +57,7 @@
         <p id="message" class="message" role="alert" hidden></p>
         <button id="start" class="start-button" type="button" disabled>Start auto capture</button>
         <button id="stop" class="stop-button" type="button" hidden>Stop recording</button>
+        <button id="folder-done" class="start-button" type="button" hidden>Back to page</button>
         <p id="guidance" class="guidance" aria-live="polite">Checking page and folder…</p>
       </footer>
     </div>
@@ -74,7 +79,7 @@
         <p>Use Stop on the camera control or Stop recording in this popup. Keep the captured tab active until Saved appears. Saving can take a little while; a failed save shows an error.</p>
 
         <h2>Choose a folder</h2>
-        <p>On Windows, choose or create a folder such as Desktop\Site Dossier. Chrome blocks Desktop and Documents themselves. It may ask for folder access again after a browser restart.</p>
+        <p>Choose opens a setup tab. Select a folder there, allow access, then choose Done. On Windows, use a subfolder such as Desktop\Site Dossier. Chrome may block system folders or ask for access again after a browser restart.</p>
 
         <h2>What gets saved</h2>
         <p>A full-page JPEG, video, contact sheet when available, HTML snapshot, and design tokens. Notes and tags are optional. Files stay in your chosen folder.</p>

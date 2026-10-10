@@ -47,6 +47,18 @@ body {
 }
 
 main { padding: 18px; }
+:root[data-folder-setup="true"] body {
+  width: min(100%, 420px);
+  max-height: none;
+  margin: 48px auto;
+}
+:root[data-folder-setup="true"] .target-line,
+:root[data-folder-setup="true"] .mode-section,
+:root[data-folder-setup="true"] .extras { display: none; }
+.folder-setup-intro { margin: 28px 0 22px; }
+.folder-setup-intro h1 { margin: 0 0 8px; font-size: 22px; }
+.folder-setup-intro p { margin: 0; color: var(--muted); }
+:root[data-folder-setup="true"] footer { margin-top: 24px; }
 button, textarea, input { font: inherit; }
 button { cursor: pointer; }
 button:focus-visible, summary:focus-visible {

@@ -15,7 +15,7 @@ Site Dossier runs when you press **Start auto capture** or **Start manual record
 1. Download and extract a release ZIP, or clone this repository.
 2. Open `chrome://extensions/` and turn on **Developer mode**.
 3. Select **Load unpacked** and choose the repository folder containing `manifest.json`.
-4. Open a page you want to capture, click the toolbar icon, and select an output folder.
+4. Open a page you want to capture, click the toolbar icon, and select **Choose**. Pick an output folder in the setup tab, allow access, and select **Done**.
 
 If Chrome runs on Windows, choose a Windows folder in the picker. Chrome blocks the Desktop and Documents root folders; choose or create a folder inside them, such as `Desktop\Site Dossier`. Chrome may not allow a folder inside WSL.
 
@@ -23,7 +23,7 @@ If Chrome runs on Windows, choose a Windows folder in the picker. Chrome blocks 
 
 Use **?** in the popup for a quick guide to capture modes, stopping, saving, and folders.
 
-1. Open the page, click the toolbar icon, and choose a Windows folder. The picker starts in Downloads, then remembers the last chosen location. Browse to a subfolder if you want to save on Desktop.
+1. Open the page and click the toolbar icon. If no folder is selected, choose one in the setup tab, allow access, select **Done**, and reopen the toolbar popup. The picker starts in Downloads, then remembers the last chosen location. Browse to a subfolder if you want to save on Desktop.
 2. Add an optional note and comma-separated tags.
 3. The popup follows your system theme. Leave **Auto capture** selected and click **Start auto capture**. Site Dossier records video and takes screenshot tiles in one scroll pass, then stops by itself at the bottom or at the 3-minute limit. The camera flashes for each screenshot.
 4. For interactive sites, select **Manual recording** instead. Drive the page yourself, then use **Stop** on the camera control or **Stop recording** in the popup. After Stop, the page scrolls once automatically to take screenshots, then returns to your position. Manual recording also stops after 180 seconds.

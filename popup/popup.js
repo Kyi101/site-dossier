@@ -11,10 +11,17 @@ const stopBtn = document.getElementById('stop');
 const manualModeEl = document.getElementById('mode-manual');
 const autoModeEl = document.getElementById('mode-auto');
 const pickDirBtn = document.getElementById('pick-dir');
+const folderSetup = new URL(window.location.href).searchParams.has('folder-setup');
+const folderDoneBtn = document.getElementById('folder-done');
+document.documentElement.dataset.folderSetup = String(folderSetup);
+document.getElementById('folder-setup-intro').hidden = !folderSetup;
+folderDoneBtn.hidden = !folderSetup;
+folderDoneBtn.addEventListener('click', () => window.close());
 
 const helpToggleBtn = document.getElementById('help-toggle');
 const helpBackBtn = document.getElementById('help-back');
 const helpView = document.getElementById('help-view');
+helpToggleBtn.hidden = folderSetup;
 const captureView = document.getElementById('capture-view');
 function showHelp(open) {
   helpView.hidden = !open;
@@ -100,6 +107,18 @@ function render() {
   stopBtn.hidden = !captureActive || capture.phase !== 'recording';
   stopBtn.disabled = busy;
 
+  if (folderSetup) {
+    startBtn.hidden = true;
+    stopBtn.hidden = true;
+    folderDoneBtn.disabled = busy;
+    folderDoneBtn.textContent = folderChosen ? 'Done' : 'Back to page';
+    setBadge(busy ? 'Choosing folder' : folderChosen ? 'Folder selected' : '', 'neutral');
+    guidanceEl.textContent = busy ? 'Choose a local folder and allow access.' :
+      folderChosen ? 'Folder saved. Choose Done, then open Site Dossier on your page.' :
+      'Choose or create a subfolder inside Desktop, Documents, or another location.';
+    return;
+  }
+
   if (loading || busy) {
     setBadge(busyAction === 'folder' ? 'Choosing folder' :
       busyAction === 'start' ? 'Starting' : busyAction === 'stop' ? 'Stopping' : 'Checking', 'neutral');
@@ -162,6 +181,16 @@ pickDirBtn.addEventListener('click', async () => {
   clearError();
   render();
   try {
+    if (!folderSetup) {
+      // Native folder/permission dialogs can close a toolbar popup before its
+      // handle is stored. A normal extension tab survives those focus changes.
+      await chrome.tabs.create({
+        url: chrome.runtime.getURL('popup/popup.html?folder-setup'),
+        ...(activeTab?.id ? { openerTabId: activeTab.id } : {})
+      });
+      window.close();
+      return;
+    }
     const handle = await window.showDirectoryPicker({
       mode: 'readwrite', id: 'site-dossier-local', startIn: 'downloads'
     });
