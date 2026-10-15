@@ -20,36 +20,62 @@
     </header>
 
     <div id="capture-view">
-      <div id="folder-setup-intro" class="folder-setup-intro" hidden>
-        <h1>Choose a save folder</h1>
-        <p>Select a folder for your captures, then return to your page.</p>
-      </div>
       <p class="target-line"><span>Page</span><strong id="page-host">Checking…</strong></p>
 
       <section class="section" aria-labelledby="folder-heading">
         <h2 id="folder-heading">Save to</h2>
         <div class="folder-row">
           <strong id="folder-name" aria-live="polite">No folder selected</strong>
-          <button id="pick-dir" class="folder-button" type="button" disabled>Choose</button>
+          <button id="pick-dir" class="folder-button" type="button" title="Choose a local save folder" disabled>Choose</button>
         </div>
         <p id="folder-hint" class="folder-hint">Choose or create a folder inside Desktop, Documents, or another location.</p>
       </section>
 
-      <fieldset class="section mode-section">
-        <legend>Capture mode</legend>
+      <fieldset class="section kind-section">
+        <legend>Capture</legend>
+        <div class="mode-options">
+          <label><input id="kind-page" type="radio" name="capture-kind" value="page" checked><span>Page</span></label>
+          <label><input id="kind-selection" type="radio" name="capture-kind" value="selection"><span>Selection</span></label>
+        </div>
+      </fieldset>
+
+      <fieldset id="page-mode" class="section mode-section">
+        <legend>Page mode</legend>
         <div class="mode-options">
           <label><input id="mode-auto" type="radio" name="capture-mode" value="auto" checked><span>Auto</span></label>
           <label><input id="mode-manual" type="radio" name="capture-mode" value="manual"><span>Manual</span></label>
         </div>
       </fieldset>
 
+      <fieldset id="selection-mode" class="section mode-section" hidden>
+        <legend>Selection tool</legend>
+        <div class="mode-options">
+          <label><input id="selection-elements" type="radio" name="selection-tool" value="element" checked><span>Elements</span></label>
+          <label><input id="selection-rectangle" type="radio" name="selection-tool" value="rectangle"><span>Rectangle</span></label>
+        </div>
+      </fieldset>
+
+      <fieldset class="section taste-section">
+        <legend>What do you like? <span class="label-hint">· Optional</span></legend>
+        <div class="taste-options">
+          <label><input id="like-colors" type="checkbox" disabled><span>Colors</span></label>
+          <label><input id="like-typography" type="checkbox" disabled><span>Typography</span></label>
+          <label><input id="like-layout" type="checkbox" disabled><span>Layout</span></label>
+          <label><input id="like-spacing" type="checkbox" disabled><span>Spacing</span></label>
+          <label title="Photos and illustrations"><input id="like-imagery" type="checkbox" disabled><span>Imagery</span></label>
+          <label><input id="like-motion" type="checkbox" disabled><span>Motion</span></label>
+          <label><input id="like-interactions" type="checkbox" disabled><span>Interactions</span></label>
+          <label><input id="like-details" type="checkbox" disabled><span>Small details</span></label>
+        </div>
+      </fieldset>
+
       <details class="extras">
-        <summary>Add note or tags <span>Optional</span></summary>
+        <summary>Add note &amp; tags <span>Optional</span></summary>
         <div class="extra-fields">
-          <label for="note">Note</label>
-          <textarea id="note" rows="2" placeholder="What caught your eye?" disabled></textarea>
+          <label for="note">Note for your agent</label>
+          <textarea id="note" rows="3" placeholder="Add any relevant context: what to reuse or avoid, a specific detail, or where you plan to use it." disabled></textarea>
           <label for="tags">Tags <span class="label-hint">· separate with commas</span></label>
-          <input id="tags" type="text" placeholder="Typography, motion, layout" disabled>
+          <input id="tags" type="text" placeholder="e.g. scroll-driven, storytelling, portfolio" disabled>
         </div>
       </details>
 
@@ -57,7 +83,6 @@
         <p id="message" class="message" role="alert" hidden></p>
         <button id="start" class="start-button" type="button" disabled>Start auto capture</button>
         <button id="stop" class="stop-button" type="button" hidden>Stop recording</button>
-        <button id="folder-done" class="start-button" type="button" hidden>Back to page</button>
         <p id="guidance" class="guidance" aria-live="polite">Checking page and folder…</p>
       </footer>
     </div>
@@ -75,15 +100,24 @@
         <p>For menus, animations, and other interactions you want to record yourself. You control the page until you press Stop or reach the 3-minute limit.</p>
         <p><strong>After Stop, the page scrolls once automatically for screenshots</strong>, then returns to your position. The video has already stopped.</p>
 
+        <h2>Selection</h2>
+        <p>Click to select an element. Hold Ctrl (Windows/Linux) or Cmd (Mac) while clicking to add or remove elements, up to eight. Choose Elements or Rectangle in the extension popup before opening the picker. Drag the panel by its heading if it covers a detail.</p>
+        <p>Add an optional note for each item, then Save. The picker stays open so you can select and save another set. Close it or press Escape when finished. Your popup notes and taste choices apply to the capture as a whole. Escape cancels. Selections must fit inside the visible page; use Page capture for longer sections. Browser zoom is supported; reset pinch zoom before selecting.</p>
+        <p>Selected browser animations are held until you save, deselect, or close. Selections save sharp crops, a context image, coordinates, and sampled structure/styles for picked elements. The picker is hidden from the images. A rectangle saves visual evidence only; neither tool exports a ready-to-use component.</p>
+
         <h2>Stop and saving</h2>
         <p>Use Stop on the camera control or Stop recording in this popup. Keep the captured tab active until Saved appears. Saving can take a little while; a failed save shows an error.</p>
 
         <h2>Choose a folder</h2>
-        <p>Choose opens a setup tab. Select a folder there, allow access, then choose Done. On Windows, use a subfolder such as Desktop\Site Dossier. Chrome may block system folders or ask for access again after a browser restart.</p>
+        <p>Choose opens the folder dialog directly. Select a folder and allow access, then continue in this popup. On Windows, use a subfolder such as Desktop\Site Dossier. Chrome may block system folders or ask for access again after a browser restart.</p>
 
         <h2>What gets saved</h2>
-        <p>A full-page JPEG, video, contact sheet when available, HTML snapshot, and design tokens. Notes and tags are optional. Files stay in your chosen folder.</p>
+        <p>Page captures save a full-page JPEG, readable page tiles, video, timestamped stills and a contact sheet when decoding succeeds, HTML, and sampled design tokens. Your taste selections, notes, and context stay with each capture. Files stay in your chosen folder.</p>
         <p>The camera control stays visible and appears in the JPEG and video. The HTML snapshot is a reference, not a guaranteed offline copy.</p>
+
+        <h2>Share your taste with an agent</h2>
+        <p>Select only the aspects you like. Leave everything blank to save a reference without a preference. Use the note to describe what to reuse or avoid. Tags can describe patterns such as scroll-driven or storytelling, or organize references by project.</p>
+        <p>Give your agent the save folder to explore. SITE-DOSSIER.md provides a visible starting point. It links to a reading skill that also explains older captures. Existing guide files are preserved; the skill is not installed into your agent automatically.</p>
 
         <h2>Appearance</h2>
         <p>The popup follows your system theme automatically.</p>

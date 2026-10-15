@@ -14,6 +14,7 @@
   let startedAt = null;
   let stoppedAt = null;
   let recordingStopReason = null;
+  let screenshotEvidence = null;
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === 'INJECT_BANNER') {
@@ -178,6 +179,7 @@
     shotCount = 0;
     stoppedAt = null;
     recordingStopReason = null;
+    screenshotEvidence = null;
     let screenshotStopReason = null;
     let screenshotTask = null;
     recorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp9' });
@@ -207,6 +209,9 @@
         // Build tokens object — extractors are wrapped in try/catch so partial failure doesn't lose other fields
 
         const tokens = {
+          schema_version: 2,
+          observations_only: true,
+          sampling: 'Computed styles and accessible CSS rules; incomplete observations, not an authored design system.',
           extracted_at: new Date().toISOString(),
           viewport: { width: window.innerWidth, height: window.innerHeight },
           errors: []
@@ -239,14 +244,14 @@
         const htmlSnapshot = await captureHtmlSnapshot();
         console.log('[design-capture] onstop: HTML length', htmlSnapshot.length);
 
-        const durationS = Math.round(((stoppedAt || Date.now()) - startedAt) / 1000);
+        const durationS = ((stoppedAt || Date.now()) - startedAt) / 1000;
         console.log('[design-capture] onstop: sending CAPTURE_BUNDLE_READY (durationS:', durationS, ')');
         const response = await new Promise((resolve) => {
           try {
             chrome.runtime.sendMessage({
               type: 'CAPTURE_BUNDLE_READY',
               video: { dataUrl: videoDataUrl, size: blob.size, durationS, stopReason: recordingStopReason },
-              screenshot: { dataUrl: screenshotDataUrl, stopReason: screenshotStopReason },
+              screenshot: { dataUrl: screenshotDataUrl, stopReason: screenshotStopReason, evidence: screenshotEvidence },
               html: htmlSnapshot,
               tokens
             }, (res) => {
@@ -270,8 +275,10 @@
         const label = recordingStopReason === 'time-limit' ? 'Saved — 3-minute limit' :
           recordingStopReason === 'stream-ended' ? 'Saved — recording ended' :
           ['time-limit', 'scroll-blocked'].includes(screenshotStopReason) ? 'Saved — partial screenshot' : 'Saved';
-        setBannerState('saved', label, `${response.result.folderName}/${response.result.viewport}`);
-        scheduleBannerRemoval(8000, 'saved');
+        const warnings = response.result.warnings || [];
+        setBannerState('saved', warnings.length ? `${label} — check warning` : label,
+          `${response.result.folderName}/${response.result.viewport}` + (warnings.length ? ` · ${warnings.join(' ')}` : ''));
+        scheduleBannerRemoval(warnings.length ? 16000 : 8000, 'saved');
       } catch (err) {
         console.error('[design-capture] onstop FAILED:', err);
         setBannerState('failed', 'Save failed', String(err.message || err));
@@ -477,7 +484,10 @@
     const ctx = canvas.getContext('2d');
     if (!ctx) throw new Error('Could not create screenshot canvas.');
 
-    for (const slice of slices) {
+    const selectedSlices = new Set(SiteDossierCapture.sampleIndices(slices.length, 24));
+    const tiles = [];
+    let tileBytes = 0;
+    for (const [index, slice] of slices.entries()) {
       const img = await loadImage(slice.dataUrl);
       ctx.drawImage(
         img,
@@ -486,12 +496,37 @@
         Math.ceil(viewportWidth * scale),
         Math.ceil(viewportHeight * scale)
       );
+      if (selectedSlices.has(index)) {
+        const tile = document.createElement('canvas');
+        const tileScale = Math.min(1, 1280 / Math.max(img.naturalWidth || img.width, img.naturalHeight || img.height));
+        tile.width = Math.max(1, Math.round((img.naturalWidth || img.width) * tileScale));
+        tile.height = Math.max(1, Math.round((img.naturalHeight || img.height) * tileScale));
+        tile.getContext('2d').drawImage(img, 0, 0, tile.width, tile.height);
+        const dataUrl = tile.toDataURL('image/jpeg', 0.9);
+        if (dataUrl.startsWith('data:image/jpeg;') && tileBytes + dataUrl.length <= 8 * 1024 * 1024) {
+          tiles.push({ dataUrl, source_slice: index + 1, x: slice.x, y: slice.y,
+            css_width: viewportWidth, css_height: viewportHeight, width: tile.width, height: tile.height });
+          tileBytes += dataUrl.length;
+        }
+      }
     }
 
     const jpeg = canvas.toDataURL('image/jpeg', 0.85);
     if (!jpeg.startsWith('data:image/jpeg;')) {
       throw new Error('Screenshot canvas could not be encoded.');
     }
+    screenshotEvidence = {
+      overview_px: { width: canvas.width, height: canvas.height },
+      scale_px_per_css_px: scale,
+      viewport_css: { width: viewportWidth, height: viewportHeight },
+      document_css: fullSize,
+      captured_css: { width: maxX, height: maxY },
+      position_basis: usedWideTrack ? 'transformed-track-estimate' : 'document-scroll',
+      total_slices: slices.length,
+      omitted_tiles: slices.length - tiles.length,
+      tile_limit: 24,
+      tiles
+    };
     return jpeg;
   }
 
@@ -739,7 +774,11 @@
 
   function extractTypography() {
     // Fonts: from @font-face rules + computed font-family
-    const fonts = new Map(); // family -> { weights:Set, sources:Set }
+    const fonts = new Map();
+    const font = family => {
+      if (!fonts.has(family)) fonts.set(family, { weights: new Set(), ranges: new Set(), declared: new Set(), sources: new Set() });
+      return fonts.get(family);
+    };
 
     // Walk all CSS rules for @font-face
     for (const sheet of document.styleSheets) {
@@ -750,30 +789,31 @@
         if (rule instanceof CSSFontFaceRule) {
           const family = rule.style.getPropertyValue('font-family').replace(/['"]/g, '').trim();
           const src = rule.style.getPropertyValue('src');
-          const weightRaw = rule.style.getPropertyValue('font-weight') || '400';
-          const weight = parseInt(weightRaw, 10) || 400;
-          if (!fonts.has(family)) fonts.set(family, { weights: new Set(), sources: new Set() });
-          fonts.get(family).weights.add(weight);
-          fonts.get(family).sources.add(classifyFontSource(src));
+          const weight = SiteDossierCapture.fontWeight(rule.style.getPropertyValue('font-weight') || 'normal');
+          const info = font(family);
+          weight.values.forEach(value => info.weights.add(value));
+          if (weight.range) info.ranges.add(JSON.stringify(weight.range));
+          info.declared.add(weight.raw);
+          info.sources.add(classifyFontSource(src));
         }
       }
     }
 
     // Also pick up families that are referenced but not in @font-face (system / web-safe / google CDN linked)
-    const usedFamilies = new Set();
     for (const el of document.querySelectorAll('h1, h2, h3, h4, h5, h6, p, body')) {
-      const family = getComputedStyle(el).fontFamily.split(',')[0].replace(/['"]/g, '').trim();
-      if (family) usedFamilies.add(family);
-    }
-    for (const family of usedFamilies) {
-      if (!fonts.has(family)) {
-        fonts.set(family, { weights: new Set([400]), sources: new Set(['system']) });
-      }
+      const style = getComputedStyle(el);
+      const family = style.fontFamily.split(',')[0].replace(/['"]/g, '').trim();
+      if (!family) continue;
+      const info = font(family);
+      SiteDossierCapture.fontWeight(style.fontWeight).values.forEach(value => info.weights.add(value));
+      if (!info.sources.size) info.sources.add(/^(serif|sans-serif|monospace|system-ui|cursive|fantasy|ui-.+)$/i.test(family) ? 'generic' : 'unknown');
     }
 
     const fontsArr = Array.from(fonts.entries()).map(([family, info]) => ({
       family,
       weights: Array.from(info.weights).sort((a, b) => a - b),
+      weight_ranges: Array.from(info.ranges, value => JSON.parse(value)),
+      declared_weights: Array.from(info.declared),
       sources: Array.from(info.sources)
     }));
 

@@ -1,20 +1,20 @@
 # Privacy policy for Site Dossier
 
-Last updated: September 26, 2026
+Last updated: October 15, 2026
 
 ## What Site Dossier does
 
-Site Dossier creates a local design-reference bundle only after you choose a page and click **Start auto capture** or **Start manual recording**. You choose the output folder and can stop from the page control or popup.
+Site Dossier creates local design-reference bundles after you start a page capture or save an element or rectangular selection. You choose the output folder. You can stop page recording from the page control or popup, and close the selection panel when you are done.
 
 ## Information handled
 
-The extension processes the selected page URL, visible tab screenshots and video, the page DOM and computed styles, page-linked CSS and JavaScript text, capture timing/viewport metadata, and any note or tags you enter. Manual video may show your visible interactions with the selected page. These inputs are used only to create your requested local reference bundle.
+The extension processes the selected page URL, visible tab screenshots and video, the page DOM and computed styles, page-linked CSS and JavaScript text, capture timing/viewport and selection coordinates, and any notes, tags or taste choices you enter. Element selections can include bounded element structure, computed styles and SVG details; rectangle selections save visual evidence without element structure. Manual video may show your visible interactions with the selected page. These inputs are used only to create your requested local reference bundle.
 
 Page content can include private or sensitive information, such as personal details, messages, form content, or account information visible on or present in the page. Capture only pages you intend to save. Site Dossier does not separately access Chrome's browsing-history database, read browser cookies or saved passwords through browser APIs, request microphone/webcam/geolocation access, or run an independent keystroke tracker.
 
 ## Storage and retention
 
-Capture media and page content are processed on your device. Temporary capture metadata is kept in session storage so a suspended service worker can recover the active flow; it is removed after the capture succeeds or fails. The selected folder handle is remembered in local IndexedDB so you can choose the same folder again. Chrome may ask you to grant access again.
+Capture media and page content are processed on your device. Temporary capture and selection-session metadata is kept in session storage so a suspended service worker can recover the active flow. Page capture metadata is cleared when the flow finishes. Selection-session context remains available between saves until the session ends, including when you close the picker or leave the page. A failed selection save may keep the selection available for retry. The selected folder handle is remembered in local IndexedDB so you can choose the same folder again. Chrome may ask you to grant access again.
 
 Saved files remain in your chosen folder until you delete them yourself. You can change the destination in the popup. Removing the extension clears its browser-stored folder selection; it does not delete files already saved to your computer.
 

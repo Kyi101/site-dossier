@@ -6,22 +6,20 @@ const guidanceEl = document.getElementById('guidance');
 const messageEl = document.getElementById('message');
 const noteEl = document.getElementById('note');
 const tagsEl = document.getElementById('tags');
+const likedAspects = ['colors', 'typography', 'layout', 'spacing', 'imagery', 'motion', 'interactions', 'details'];
+const tasteInputs = likedAspects.map(aspect => document.getElementById(`like-${aspect}`));
 const startBtn = document.getElementById('start');
 const stopBtn = document.getElementById('stop');
 const manualModeEl = document.getElementById('mode-manual');
 const autoModeEl = document.getElementById('mode-auto');
+const selectionKindEl = document.getElementById('kind-selection');
+const pageKindEl = document.getElementById('kind-page');
+const rectangleEl = document.getElementById('selection-rectangle');
+const elementsEl = document.getElementById('selection-elements');
 const pickDirBtn = document.getElementById('pick-dir');
-const folderSetup = new URL(window.location.href).searchParams.has('folder-setup');
-const folderDoneBtn = document.getElementById('folder-done');
-document.documentElement.dataset.folderSetup = String(folderSetup);
-document.getElementById('folder-setup-intro').hidden = !folderSetup;
-folderDoneBtn.hidden = !folderSetup;
-folderDoneBtn.addEventListener('click', () => window.close());
-
 const helpToggleBtn = document.getElementById('help-toggle');
 const helpBackBtn = document.getElementById('help-back');
 const helpView = document.getElementById('help-view');
-helpToggleBtn.hidden = folderSetup;
 const captureView = document.getElementById('capture-view');
 function showHelp(open) {
   helpView.hidden = !open;
@@ -80,6 +78,7 @@ async function initialize() {
 }
 
 function render() {
+  const selectionMode = Boolean(selectionKindEl.checked);
   const recordable = activeTab && isRecordableUrl(activeTab.url);
   const captureActive = Boolean(capture);
   const canStart = !loading && !busy && !statusUnavailable && recordable && folderHandle && !folderUnavailable && !captureActive;
@@ -95,29 +94,24 @@ function render() {
       : 'Choose or create a folder inside Desktop, Documents, or another location.';
   folderHintEl.hidden = !folderHintEl.textContent;
   pickDirBtn.textContent = busyAction === 'folder' ? 'Choosing…' : folderHandle ? 'Change' : 'Choose';
+  pickDirBtn.title = 'Choose a local save folder';
   pickDirBtn.disabled = busy || captureActive;
   noteEl.disabled = loading || busy || captureActive || !recordable;
   tagsEl.disabled = noteEl.disabled;
+  for (const input of tasteInputs) input.disabled = noteEl.disabled;
   autoModeEl.disabled = loading || busy || captureActive;
   manualModeEl.disabled = autoModeEl.disabled;
+  for (const input of [selectionKindEl, pageKindEl, rectangleEl, elementsEl]) input.disabled = autoModeEl.disabled;
+  document.getElementById('page-mode').hidden = selectionMode;
+  document.getElementById('selection-mode').hidden = !selectionMode;
   startBtn.disabled = !canStart;
   startBtn.hidden = captureActive;
   startBtn.textContent = busyAction === 'start' ? 'Starting…' :
+    selectionMode ? rectangleEl.checked ? 'Draw a rectangle' : 'Choose elements' :
     manualModeEl.checked ? 'Start manual recording' : 'Start auto capture';
-  stopBtn.hidden = !captureActive || capture.phase !== 'recording';
+  stopBtn.hidden = !captureActive || !['recording', 'selecting'].includes(capture.phase);
+  stopBtn.textContent = capture?.phase === 'selecting' ? 'Close selection' : 'Stop recording';
   stopBtn.disabled = busy;
-
-  if (folderSetup) {
-    startBtn.hidden = true;
-    stopBtn.hidden = true;
-    folderDoneBtn.disabled = busy;
-    folderDoneBtn.textContent = folderChosen ? 'Done' : 'Back to page';
-    setBadge(busy ? 'Choosing folder' : folderChosen ? 'Folder selected' : '', 'neutral');
-    guidanceEl.textContent = busy ? 'Choose a local folder and allow access.' :
-      folderChosen ? 'Folder saved. Choose Done, then open Site Dossier on your page.' :
-      'Choose or create a subfolder inside Desktop, Documents, or another location.';
-    return;
-  }
 
   if (loading || busy) {
     setBadge(busyAction === 'folder' ? 'Choosing folder' :
@@ -127,8 +121,8 @@ function render() {
       busyAction === 'stop' ? 'Stopping the recording…' : 'Checking page and folder…';
   } else if (captureActive) {
     setBadge(['processing', 'saving'].includes(capture.phase) ? 'Saving' :
-      capture.phase === 'stopping' ? 'Stopping' : 'Recording', 'attention');
-    guidanceEl.textContent = capture.phase === 'recording'
+      capture.phase === 'stopping' ? 'Stopping' : capture.phase === 'selecting' ? 'Selecting' : 'Recording', 'attention');
+    guidanceEl.textContent = capture.phase === 'selecting' ? 'Choose and save on the page, or cancel here.' : capture.phase === 'recording'
       ? capture.mode === 'manual'
         ? 'Manual recording is active. Stop from here or the page bar.'
         : 'Auto recording is active. Stop from here or the page bar.'
@@ -153,7 +147,7 @@ function render() {
     guidanceEl.textContent = 'Try Start again, or choose another folder.';
   } else {
     setBadge('', 'neutral');
-    guidanceEl.textContent = manualModeEl.checked
+    guidanceEl.textContent = selectionMode ? 'Choose a visible area on the page, then save.' : manualModeEl.checked
       ? 'You control the page. Stop when ready; 3-minute limit.'
       : 'Scrolls to the bottom and saves; 3-minute limit.';
   }
@@ -181,16 +175,6 @@ pickDirBtn.addEventListener('click', async () => {
   clearError();
   render();
   try {
-    if (!folderSetup) {
-      // Native folder/permission dialogs can close a toolbar popup before its
-      // handle is stored. A normal extension tab survives those focus changes.
-      await chrome.tabs.create({
-        url: chrome.runtime.getURL('popup/popup.html?folder-setup'),
-        ...(activeTab?.id ? { openerTabId: activeTab.id } : {})
-      });
-      window.close();
-      return;
-    }
     const handle = await window.showDirectoryPicker({
       mode: 'readwrite', id: 'site-dossier-local', startIn: 'downloads'
     });
@@ -200,6 +184,7 @@ pickDirBtn.addEventListener('click', async () => {
     folderUnavailable = false;
     try { folderPermission = await handle.queryPermission({ mode: 'readwrite' }); }
     catch { folderPermission = 'prompt'; folderUnavailable = true; }
+    // Keep the popup and its notes/taste choices available after choosing.
   } catch (err) {
     if (err?.name !== 'AbortError') showError(`Could not choose a folder: ${err.message || err}`);
   } finally {
@@ -228,10 +213,16 @@ startBtn.addEventListener('click', async () => {
     const viewportName = (activeTab.width && activeTab.width < 768) ? 'mobile' : 'desktop';
     const response = await chrome.runtime.sendMessage({
       type: 'CAPTURE_START',
+      kind: selectionKindEl.checked ? 'selection' : 'page',
+      selectionTool: rectangleEl.checked ? 'rectangle' : 'element',
       tabId: activeTab.id,
       url: activeTab.url,
-      note: noteEl.value.trim(),
+      title: activeTab.title || '',
+      note: noteEl.value,
       tags: tagsEl.value.split(',').map(t => t.trim()).filter(Boolean),
+      preferences: {
+        liked_aspects: likedAspects.filter((aspect, index) => tasteInputs[index].checked)
+      },
       viewportSize: { width: activeTab.width || 0, height: activeTab.height || 0 },
       viewportName,
       mode: manualModeEl.checked ? 'manual' : 'auto'
@@ -248,9 +239,10 @@ startBtn.addEventListener('click', async () => {
 
 manualModeEl.addEventListener('change', render);
 autoModeEl.addEventListener('change', render);
+for (const input of [selectionKindEl, pageKindEl, rectangleEl, elementsEl]) input.addEventListener('change', render);
 
 stopBtn.addEventListener('click', async () => {
-  if (stopBtn.disabled || !capture || capture.phase !== 'recording') return;
+  if (stopBtn.disabled || !capture || !['recording', 'selecting'].includes(capture.phase)) return;
   busy = true;
   busyAction = 'stop';
   clearError();
@@ -258,7 +250,7 @@ stopBtn.addEventListener('click', async () => {
   try {
     const response = await chrome.runtime.sendMessage({ type: 'CAPTURE_STOP', tabId: capture.tabId });
     if (!response?.ok) throw new Error(response?.error || 'Could not stop recording.');
-    capture = { ...capture, phase: 'saving' };
+    capture = capture.phase === 'selecting' ? null : { ...capture, phase: 'saving' };
   } catch (err) {
     showError(`Could not stop: ${err.message || err}`);
   } finally {
