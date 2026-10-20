@@ -100,3 +100,15 @@ Run `node scripts/verify.mjs` for the dependency-free checks. For a local Chrome
 The privacy check accepts GitHub noreply identities and author metadata from explicitly reviewed public commits, pinned by their full commit hashes in `scripts/public-release-check.mjs`. Other personal commit addresses still require review; these exceptions never exempt file contents or private paths from the audit.
 
 Before a public release, test the ZIP as an unpacked extension in Chrome: run Auto and Manual captures, record manually for more than 30 seconds, switch tabs during saving, capture two URLs on one host, reopen Chrome and re-grant the output folder, and inspect every output file. Chrome Web Store submission has its own listing and privacy requirements.
+
+## Contributing source
+
+Before committing or pushing from a new clone, install the local privacy hooks:
+
+```sh
+python3 scripts/public-push-guard.py install
+```
+
+Read [the public source policy](docs/public-source-policy.md). Only explicitly
+approved product files belong in public commits. Python 3 is used for developer
+checks only; the extension has no added runtime dependency.

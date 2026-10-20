@@ -45,3 +45,41 @@ prototypes/
 
 # Ignored legacy FFmpeg code; it is no longer shipped
 offscreen/ffmpeg/
+
+# Private creation, distribution, strategy and agent working material.
+# The public file allowlist and Git hooks remain authoritative even with git add -f.
+AGENTS.md
+CLAUDE.md
+AUTONOMY.md
+STATUS.md
+DECISIONS.md
+NOTES.md
+.agents/
+.codex/
+.claude/
+private/
+internal/
+notes/
+chats/
+conversations/
+transcripts/
+sessions/
+strategy/
+strategies/
+distribution/
+marketing/
+campaigns/
+social/
+prompts/
+prototypes/
+captures/
+proofs/
+renders/
+.env
+.env.*
+*.mp4
+*.webm
+*.mov
+*.gif
+*.zip
+__pycache__/

@@ -1,0 +1,46 @@
+{
+  "files": [
+    ".github/dependabot.yml",
+    ".github/workflows/ci.yml",
+    ".gitignore",
+    "LICENSE",
+    "PRIVACY.md",
+    "README.md",
+    "background/background.js",
+    "content/banner.css",
+    "content/content.js",
+    "content/selection.css",
+    "content/selection.js",
+    "docs/public-source-policy.md",
+    "icons/128.png",
+    "icons/16.png",
+    "icons/48.png",
+    "manifest.json",
+    "offscreen/media.js",
+    "offscreen/offscreen.html",
+    "offscreen/offscreen.js",
+    "popup/popup.css",
+    "popup/popup.html",
+    "popup/popup.js",
+    "reference/SITE-DOSSIER.md",
+    "reference/legacy-entry-v1.md",
+    "reference/use-site-dossier/SKILL.md",
+    "scripts/package.py",
+    "scripts/public-files.json",
+    "scripts/public-push-guard.py",
+    "scripts/public-release-check.mjs",
+    "scripts/test-public-push-guard.py",
+    "scripts/verify.mjs",
+    "shared/capture-math.js"
+  ],
+  "published_baselines": [
+    "b0c0056ed10d779fde894534c24a7ddf9228c55f"
+  ],
+  "remotes": [
+    "https://github.com/Kyi101/site-dossier.git",
+    "https://github.com/Kyi101/site-dossier",
+    "git@github.com:Kyi101/site-dossier.git",
+    "ssh://git@github.com/Kyi101/site-dossier.git"
+  ],
+  "max_blob_bytes": 8000000
+}

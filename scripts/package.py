@@ -48,6 +48,7 @@ def check_release_source():
     missing = sorted((set(FILES) | {"LICENSE"}) - tracked)
     if missing:
         raise SystemExit(f"Release files are untracked: {', '.join(missing)}")
+    subprocess.run(["python3", "scripts/public-push-guard.py", "check", "HEAD"], cwd=ROOT, check=True)
     subprocess.run(["node", "scripts/public-release-check.mjs"], cwd=ROOT, check=True)
 
 
