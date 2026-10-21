@@ -20,15 +20,16 @@
     </header>
 
     <div id="capture-view">
+      <button id="open-collector" class="folder-button" type="button" style="width:100%; margin-top:16px">Collect images &amp; screenshots →</button>
       <p class="target-line"><span>Page</span><strong id="page-host">Checking…</strong></p>
 
       <section class="section" aria-labelledby="folder-heading">
-        <h2 id="folder-heading">Save to</h2>
+        <h2 id="folder-heading">Library folder</h2>
         <div class="folder-row">
           <strong id="folder-name" aria-live="polite">No folder selected</strong>
-          <button id="pick-dir" class="folder-button" type="button" title="Choose a local save folder" disabled>Choose</button>
+          <button id="pick-dir" class="folder-button" type="button" title="Change the library folder for all capture modes" disabled>Choose</button>
         </div>
-        <p id="folder-hint" class="folder-hint">Choose or create a folder inside Desktop, Documents, or another location.</p>
+        <p id="folder-hint" class="folder-hint">Choose one folder for website captures, images and screenshots.</p>
       </section>
 
       <fieldset class="section kind-section">
@@ -69,7 +70,7 @@
         </div>
       </fieldset>
 
-      <details class="extras">
+      <details id="note-fields" class="extras">
         <summary>Add note &amp; tags <span>Optional</span></summary>
         <div class="extra-fields">
           <label for="note">Note for your agent</label>
@@ -109,14 +110,16 @@
         <p>Use Stop on the camera control or Stop recording in this popup. Keep the captured tab active until Saved appears. Saving can take a little while; a failed save shows an error.</p>
 
         <h2>Choose a folder</h2>
-        <p>Choose opens the folder dialog directly. Select a folder and allow access, then continue in this popup. On Windows, use a subfolder such as Desktop\Site Dossier. Chrome may block system folders or ask for access again after a browser restart.</p>
+        <p>Choose opens the folder dialog directly. Select one library folder for all capture modes and allow access. Website captures and collected images share this setting; their files are organized automatically. On Windows, use a subfolder such as Desktop\Site Dossier. Chrome may block system folders or ask for access again after a browser restart.</p>
 
         <h2>What gets saved</h2>
         <p>Page captures save a full-page JPEG, readable page tiles, video, timestamped stills and a contact sheet when decoding succeeds, HTML, and sampled design tokens. Your taste selections, notes, and context stay with each capture. Files stay in your chosen folder.</p>
+        <p>Capture the same page again on any day to add to its existing folder. Auto, Manual and selections each save separately inside it. The folder keeps its original name; earlier captures are preserved.</p>
         <p>The camera control stays visible and appears in the JPEG and video. The HTML snapshot is a reference, not a guaranteed offline copy.</p>
 
         <h2>Share your taste with an agent</h2>
         <p>Select only the aspects you like. Leave everything blank to save a reference without a preference. Use the note to describe what to reuse or avoid. Tags can describe patterns such as scroll-driven or storytelling, or organize references by project.</p>
+        <p>Your form is remembered locally for each page, including after a capture, closing this popup or switching tabs. Reopen it for a Manual pass or selections without filling it again. You can edit the fields for the next pass; other pages have separate forms.</p>
         <p>Give your agent the save folder to explore. SITE-DOSSIER.md provides a visible starting point. It links to a reading skill that also explains older captures. Existing guide files are preserved; the skill is not installed into your agent automatically.</p>
 
         <h2>Appearance</h2>

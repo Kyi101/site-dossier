@@ -1,3 +1,5 @@
+import { sameViewport } from '../background/rectangle.mjs';
+import './verify-library.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -73,6 +75,7 @@ function backgroundHarness(shared = {}) {
   const captured = [];
   const sentToTabs = [];
   const offscreenWrites = [];
+  const notifications = [];
   let onTabRemoved = null;
   let onTabUpdated = null;
   let tabUrl = "https://example.com/one";
@@ -95,7 +98,7 @@ function backgroundHarness(shared = {}) {
       },
       lastError: null
     },
-    notifications: { create() {} },
+    notifications: { create(options) { notifications.push(options); } },
     offscreen: { async createDocument() {} },
     storage: {
       session: {
@@ -118,7 +121,7 @@ function backgroundHarness(shared = {}) {
     scripting: { async executeScript() { return [{}]; }, async insertCSS() {} },
     tabCapture: { getMediaStreamId(_options, callback) { callback(streamId); } }
   };
-  vm.runInNewContext(read('background/background.js'), { chrome, console, Date,
+  vm.runInNewContext(read('background/background.js').replace("import './collector.mjs';", ''), { chrome, console, Date,
     fetch: async () => ({ ok: true, text: async () => read('content/banner.css') }) });
   const send = (message, sender = {}) => new Promise(resolve => {
     for (const listener of listeners) {
@@ -127,7 +130,7 @@ function backgroundHarness(shared = {}) {
     resolve(undefined);
   });
   return {
-    send, state, captured, sentToTabs, offscreenWrites,
+    send, state, captured, sentToTabs, offscreenWrites, notifications,
     setActiveTab(id) { activeTabId = id; },
     setSwitchDuringCapture(id) { switchDuringCapture = id; },
     setStreamId(id) { streamId = id; },
@@ -190,6 +193,8 @@ test('failed selection writes keep the session ready to retry', async () => {
   app.setOffscreenResponse({ ok: false, error: 'Disk unavailable' });
   const result = await app.send({ type: 'SELECTION_BUNDLE_READY' }, fromTab);
   assert.equal(result.ok, false);
+  assert.equal(app.notifications.at(-1).title, 'Capture failed');
+  assert.equal(app.notifications.at(-1).message, 'Disk unavailable');
   assert.equal(app.state.get('capture').phase, 'selecting');
   await app.send({ type: 'SELECTION_CANCEL' }, fromTab);
   assert.equal(app.state.has('capture'), false);
@@ -335,14 +340,15 @@ test('picked icon structure preserves geometry and marks bounded/truncated obser
 });
 
 test('syntax, manifest, and required package files', () => {
-  for (const file of ['background/background.js', 'content/content.js', 'content/selection.js', 'shared/capture-math.js', 'popup/popup.js', 'offscreen/offscreen.js', 'offscreen/media.js']) {
+  for (const file of ['background/background.js', 'background/collector.mjs', 'background/rectangle.mjs', 'sidepanel/sidepanel.mjs', 'shared/library.mjs', 'shared/collector-db.mjs', 'content/content.js', 'content/selection.js', 'shared/capture-math.js', 'popup/popup.js', 'offscreen/offscreen.js', 'offscreen/media.js']) {
     const result = spawnSync(process.execPath, ['--check', path.join(root, file)], { encoding: 'utf8' });
     assert.equal(result.status, 0, result.stderr);
   }
   const manifest = JSON.parse(read('manifest.json'));
   assert.equal(manifest.manifest_version, 3);
   assert.equal(manifest.minimum_chrome_version, '116');
-  assert.ok(!manifest.host_permissions);
+  assert.deepEqual(manifest.host_permissions, ['<all_urls>']);
+  assert.ok(!manifest.optional_host_permissions);
   assert.ok(!manifest.permissions.includes('downloads'));
   for (const file of ['manifest.json', 'background/background.js', 'content/content.js', 'content/banner.css',
     'popup/popup.html', 'popup/popup.css', 'popup/popup.js', 'offscreen/offscreen.html',
@@ -372,6 +378,8 @@ test('capture details survive a service worker restart and write failures reach 
   const response = await secondWorker.send({ type: 'CAPTURE_BUNDLE_READY', video: {}, screenshot: {}, html: '', tokens: {} }, fromTab);
   assert.equal(response.ok, false);
   assert.equal(response.error, 'disk full');
+  assert.equal(secondWorker.notifications.at(-1).title, 'Capture failed');
+  assert.equal(secondWorker.notifications.at(-1).message, 'disk full');
   assert.equal(secondWorker.offscreenWrites[0].payload.note, 'layout');
   assert.equal(secondWorker.offscreenWrites[0].payload.title, startMessage.title);
   assert.deepEqual(secondWorker.offscreenWrites[0].payload.preferences, startMessage.preferences);
@@ -386,6 +394,21 @@ test('successful bundle reports the saved folder and clears session state', asyn
   assert.equal(response.ok, true);
   assert.equal(response.result.folderName, 'bundle');
   assert.equal(app.state.has('capture'), false);
+});
+
+test('optional preview warnings retain diagnostics without changing successful capture notifications', async () => {
+  for (const kind of ['page', 'selection']) {
+    const app = backgroundHarness();
+    const viewport = kind === 'selection' ? 'selection-desktop' : 'desktop';
+    const warnings = ['Video stills unavailable.', 'Page tiles incomplete.', 'Folder reading guide unavailable.'];
+    await app.send({ ...startMessage, kind });
+    app.setOffscreenResponse({ ok: true, result: { folderName: 'bundle', viewport, merged: true, warnings } });
+    const response = await app.send({ type: kind === 'selection' ? 'SELECTION_BUNDLE_READY' : 'CAPTURE_BUNDLE_READY' }, fromTab);
+    assert.equal(response.ok, true);
+    assert.deepEqual(response.result.warnings, warnings);
+    assert.equal(app.notifications.at(-1).title, 'Captured');
+    assert.equal(app.notifications.at(-1).message, `Merged into bundle/${viewport}`);
+  }
 });
 
 test('screenshot request fails if another tab becomes active', async () => {
@@ -404,7 +427,11 @@ test('screenshot request fails if another tab becomes active', async () => {
 });
 
 class FakeDir {
-  constructor() { this.dirs = new Map(); this.files = new Map(); }
+  constructor() { this.kind = 'directory'; this.dirs = new Map(); this.files = new Map(); }
+  async *entries() {
+    yield* this.dirs.entries();
+    for (const name of this.files.keys()) yield [name, { kind: 'file' }];
+  }
   async getDirectoryHandle(name, { create = false } = {}) {
     if (this.files.has(name)) throw Object.assign(new Error('file occupies directory name'), { name: 'TypeMismatchError' });
     if (!this.dirs.has(name)) {
@@ -457,7 +484,7 @@ const bundlePayload = (url = 'https://example.com/one') => ({
     screenshot: { dataUrl: 'data:image/jpeg;base64,AA==', stopReason: 'page-end' }, html: '<html></html>', tokens: {}
   });
 
-test('repeated desktop and mobile captures preserve their own context and the first root copies', async () => {
+test('Auto, later Manual and mobile captures share a page bundle across days and preserve prior context', async () => {
   const { rootDir, writeBundle } = writerHarness();
   const payload = bundlePayload;
   const firstPayload = { ...payload('https://example.com/one'), tokens: { colors: ['#abcdef'] },
@@ -466,12 +493,13 @@ test('repeated desktop and mobile captures preserve their own context and the fi
   const two = await writeBundle(payload('https://example.com/two'));
   const repeatedPayload = {
     ...payload('https://example.com/one'),
+    startedAt: '2026-09-26T15:00:00Z', mode: 'manual',
     note: 'desktop navigation', tags: ['navigation'], tokens: { colors: ['#123456'] },
     preferences: { liked_aspects: ['interactions'], focus: 'Menu only', avoid: '', intended_use: '' }
   };
   const repeat = await writeBundle(repeatedPayload);
   const mobilePayload = {
-    ...payload('https://example.com/one'), viewportName: 'mobile', viewportSize: { width: 390, height: 844 },
+    ...payload('https://example.com/one'), startedAt: '2026-10-01T10:00:00Z', viewportName: 'mobile', viewportSize: { width: 390, height: 844 },
     note: 'mobile menu', tags: ['mobile', 'menu'], tokens: { colors: ['#fedcba'] }
   };
   const mobile = await writeBundle(mobilePayload);
@@ -508,9 +536,98 @@ test('repeated desktop and mobile captures preserve their own context and the fi
   assert.equal(meta.title, firstPayload.title);
   assert.deepEqual(meta.user_preferences, firstPayload.preferences);
   assert.deepEqual(JSON.parse(saved.dirs.get('desktop-2').files.get('meta.json')).user_preferences, repeatedPayload.preferences);
+  assert.equal(JSON.parse(saved.dirs.get('desktop-2').files.get('meta.json')).captured_at, repeatedPayload.startedAt);
+  assert.equal(JSON.parse(saved.dirs.get('desktop-2').files.get('meta.json')).capture_mode, 'manual');
+  assert.equal(JSON.parse(saved.dirs.get('mobile').files.get('meta.json')).captured_at, mobilePayload.startedAt);
   assert.deepEqual(JSON.parse(saved.dirs.get('mobile').files.get('meta.json')).user_preferences.liked_aspects, []);
   assert.match(saved.files.get('note.md'), /liked_aspects: \["typography","motion"\]/);
   assert.deepEqual(Array.from(one.warnings), []);
+});
+
+test('historical duplicate bundles append to the earliest dated match without moving old captures', async () => {
+  const root = new FakeDir();
+  // Deliberately enumerate the newer match first, and include a renamed match.
+  for (const name of ['example-com-2026-09-28', 'example-com-2026-09-25-3', 'a-renamed-reference']) {
+    const dir = await root.getDirectoryHandle(name, { create: true });
+    dir.files.set('url.txt', 'https://example.com/one\n');
+    dir.files.set('note.md', `Original ${name}`);
+    const desktop = await dir.getDirectoryHandle('desktop', { create: true });
+    desktop.files.set('scroll.webm', `Original video ${name}`);
+  }
+  const { writeBundle } = writerHarness(root);
+  const result = await writeBundle({ ...bundlePayload(), startedAt: '2026-10-21T12:00:00Z' });
+  assert.equal(result.folderName, 'example-com-2026-09-25-3');
+  assert.equal(result.viewport, 'desktop-2');
+  assert.equal(result.merged, true);
+  for (const name of ['example-com-2026-09-28', 'example-com-2026-09-25-3', 'a-renamed-reference']) {
+    const dir = root.dirs.get(name);
+    assert.equal(dir.files.get('note.md'), `Original ${name}`);
+    assert.equal(dir.dirs.get('desktop').files.get('scroll.webm'), `Original video ${name}`);
+  }
+  assert.equal(root.dirs.has('example-com-2026-10-21'), false);
+  assert.equal(root.dirs.get('example-com-2026-09-28').dirs.size, 1);
+  assert.equal(root.dirs.get('a-renamed-reference').dirs.size, 1);
+});
+
+test('renamed bundles are found by URL without relying on an in-memory folder cache', async () => {
+  const first = writerHarness();
+  const saved = await first.writeBundle(bundlePayload());
+  const dir = first.rootDir.dirs.get(saved.folderName);
+  first.rootDir.dirs.delete(saved.folderName);
+  first.rootDir.dirs.set('My reference', dir);
+  const restarted = writerHarness(first.rootDir);
+  const again = await restarted.writeBundle({ ...bundlePayload(), startedAt: '2026-10-21T12:00:00Z' });
+  assert.equal(again.folderName, 'My reference');
+  assert.equal(again.viewport, 'desktop-2');
+  assert.equal(again.merged, true);
+});
+
+test('cross-day bundle lookup keeps different page URLs and destinations separate', async () => {
+  const { rootDir, writeBundle } = writerHarness();
+  const first = await writeBundle(bundlePayload());
+  const folders = new Set([first.folderName]);
+  for (const url of ['https://example.com/two', 'https://example.com/one?view=two', 'https://example.com/one#two', 'https://other.example/one']) {
+    const result = await writeBundle({ ...bundlePayload(url), startedAt: '2026-10-21T12:00:00Z' });
+    assert.equal(result.merged, false);
+    assert.equal(folders.has(result.folderName), false);
+    folders.add(result.folderName);
+    assert.equal(rootDir.dirs.get(result.folderName).files.get('url.txt').trim(), url);
+  }
+  const otherLibrary = writerHarness();
+  const separate = await otherLibrary.writeBundle({ ...bundlePayload(), startedAt: '2026-10-21T12:00:00Z' });
+  assert.equal(separate.merged, false);
+  assert.equal(separate.folderName, 'example-com-2026-10-21');
+  assert.equal(separate.viewport, 'desktop');
+});
+
+test('bundle lookup ignores non-bundles without modifying them', async () => {
+  const root = new FakeDir();
+  root.files.set('README.md', 'My collection');
+  const incomplete = await root.getDirectoryHandle('example-com-2026-09-25', { create: true });
+  incomplete.files.set('note.md', 'No source URL saved');
+  const unrelated = await root.getDirectoryHandle('Other project', { create: true });
+  await unrelated.getDirectoryHandle('url.txt', { create: true });
+  const result = await writerHarness(root).writeBundle(bundlePayload());
+  assert.equal(result.folderName, 'example-com-2026-09-25-2');
+  assert.equal(root.files.get('README.md'), 'My collection');
+  assert.equal(incomplete.files.get('note.md'), 'No source URL saved');
+  assert.equal(incomplete.dirs.size, 0);
+  assert.equal(unrelated.files.size, 0);
+});
+
+test('library listing and URL-read failures stop before writing a duplicate bundle', async () => {
+  for (const failure of ['listing', 'url-read']) {
+    const root = new FakeDir();
+    const saved = await root.getDirectoryHandle('example-com-2026-09-24', { create: true });
+    saved.files.set('url.txt', 'https://example.com/one\n');
+    if (failure === 'listing') root.entries = async function* () { throw new Error('Folder unavailable'); };
+    else saved.getFileHandle = async () => { throw Object.assign(new Error('Source URL unreadable'), { name: 'NotReadableError' }); };
+    await assert.rejects(writerHarness(root).writeBundle(bundlePayload()), /unavailable|unreadable/);
+    assert.deepEqual([...root.dirs.keys()], ['example-com-2026-09-24']);
+    assert.equal(root.files.size, 0);
+    assert.equal(saved.dirs.size, 0);
+    assert.equal(saved.files.get('url.txt'), 'https://example.com/one\n');
+  }
 });
 
 test('folder skill is portable, preserves edited guides and legacy files, and restores a missing guide', async () => {
@@ -705,11 +822,13 @@ test('selection bundles save item context and scaled crops, stay separate from p
       { kind: 'rectangle', bounds: { x: 200, y: 200, width: 250, height: 100 }, note: 'These colors' }
     ] } };
   const one = await writeBundle(payload);
-  const repeat = await writeBundle(payload);
-  const page = await writeBundle(bundlePayload());
+  const repeat = await writeBundle({ ...payload, startedAt: '2026-09-26T12:00:00Z' });
+  const page = await writeBundle({ ...bundlePayload(), startedAt: '2026-10-21T12:00:00Z' });
   assert.equal(one.viewport, 'selection-desktop');
   assert.equal(repeat.viewport, 'selection-desktop-2');
   assert.equal(page.viewport, 'desktop');
+  assert.equal(repeat.folderName, one.folderName);
+  assert.equal(page.folderName, one.folderName);
   const dir = rootDir.dirs.get(one.folderName).dirs.get(one.viewport);
   assert.deepEqual(cropCalls[0], [20, 40, 200, 160, 0, 0, 200, 160]);
   const items = JSON.parse(dir.files.get('selections.json')).items;
@@ -776,7 +895,8 @@ test('last screenshot tile uses actual clamped scroll position', async () => {
 
 async function popupHarness({ tabUrl = 'https://example.com/one', savedHandle = null, activeCapture = null,
   startResponse = { ok: true }, stopResponse = { ok: true }, statusGate = null, waitForReady = true,
-  sharedConfig = null, pickerError = null, storeError = null } = {}) {
+  sharedConfig = null, pickerError = null, storeError = null, sharedDrafts = null,
+  draftReadError = null, draftWriteError = null, draftReadGate = null } = {}) {
   const elements = new Map();
   const messages = [];
   const pickerOptions = [];
@@ -785,7 +905,7 @@ async function popupHarness({ tabUrl = 'https://example.com/one', savedHandle = 
   const element = id => {
     if (!elements.has(id)) {
       elements.set(id, {
-        textContent: '', dataset: {}, attributes: {}, disabled: false, hidden: false, value: '',
+        textContent: '', dataset: {}, attributes: {}, disabled: false, hidden: false, value: '', open: false, checked: false,
         setAttribute(name, value) { this.attributes[name] = value; },
         addEventListener(type, callback) { this[type] = callback; }
       });
@@ -793,6 +913,7 @@ async function popupHarness({ tabUrl = 'https://example.com/one', savedHandle = 
     return elements.get(id);
   };
   const config = sharedConfig || new Map(savedHandle ? [['inspoDirHandle', savedHandle]] : []);
+  const drafts = sharedDrafts || new Map();
   const db = {
     transaction() {
       const tx = {
@@ -824,6 +945,17 @@ async function popupHarness({ tabUrl = 'https://example.com/one', savedHandle = 
       }
     },
     chrome: {
+      storage: { local: {
+        async get(key) {
+          if (draftReadGate) await draftReadGate;
+          if (draftReadError) throw draftReadError;
+          return { [key]: drafts.get(key) };
+        },
+        async set(values) {
+          if (draftWriteError) throw draftWriteError;
+          for (const [key, value] of Object.entries(values)) drafts.set(key, JSON.parse(JSON.stringify(value)));
+        }
+      } },
       tabs: {
         async query() { return [{ id: 4, url: tabUrl, title: 'Example design', width: 1200, height: 800 }]; },
         async create(options) { createdTabs.push(options); return { id: 9 }; }
@@ -860,8 +992,99 @@ async function popupHarness({ tabUrl = 'https://example.com/one', savedHandle = 
   };
   await vm.runInNewContext(`(async () => { ${read('popup/popup.js')} })()`, context);
   if (waitForReady) await new Promise(resolve => setImmediate(resolve));
-  return { element, messages, pickerOptions, createdTabs, config, document: context.document, get closed() { return closed; } };
+  return { element, messages, pickerOptions, createdTabs, config, drafts, document: context.document,
+    setDraftWriteError(error) { draftWriteError = error; }, get closed() { return closed; } };
 }
+
+test('popup restores the full page draft after closing before capture', async () => {
+  const first = await popupHarness();
+  first.element('note').value = '  Привіт — soft gradients\nKeep the spacing.  ';
+  await first.element('note').input();
+  first.element('tags').value = 'gradients,  portfolio, ';
+  await first.element('tags').input();
+  for (const aspect of ['colors', 'spacing']) {
+    first.element(`like-${aspect}`).checked = true;
+    await first.element(`like-${aspect}`).change();
+  }
+  for (const id of ['mode-manual', 'kind-selection', 'selection-rectangle']) {
+    first.element(id).checked = true;
+    first.element(id).change();
+  }
+  first.element('note-fields').open = true;
+  await first.element('note-fields').toggle();
+  const reopened = await popupHarness({ sharedDrafts: first.drafts });
+  for (const id of ['note', 'tags']) assert.equal(reopened.element(id).value, first.element(id).value);
+  for (const id of ['like-colors', 'like-spacing', 'mode-manual', 'kind-selection', 'selection-rectangle']) {
+    assert.equal(reopened.element(id).checked, true, id);
+  }
+  for (const id of ['like-motion', 'mode-auto', 'kind-page', 'selection-elements']) assert.equal(reopened.element(id).checked, false, id);
+  assert.equal(reopened.element('note-fields').open, true);
+  assert.equal(reopened.element('start').textContent, 'Draw a rectangle');
+  assert.equal(first.messages.some(message => message.type === 'CAPTURE_START'), false);
+});
+
+test('popup drafts stay separate across tabs, page paths, queries and fragments', async () => {
+  const first = await popupHarness();
+  first.element('note').value = 'First page only';
+  await first.element('note').input();
+  for (const tabUrl of ['https://other.example/', 'https://example.com/two', 'https://example.com/one?view=two', 'https://example.com/one#two']) {
+    const other = await popupHarness({ tabUrl, sharedDrafts: first.drafts });
+    assert.equal(other.element('note').value, '');
+    other.element('note').value = 'A different page';
+    await other.element('note').input();
+  }
+  const returned = await popupHarness({ sharedDrafts: first.drafts });
+  assert.equal(returned.element('note').value, 'First page only');
+});
+
+test('popup saves the last keystroke immediately and preserves cleared fields', async () => {
+  const first = await popupHarness();
+  first.element('note').value = 'Old';
+  void first.element('note').input();
+  first.element('note').value = 'Latest';
+  void first.element('note').input();
+  const reopened = await popupHarness({ sharedDrafts: first.drafts });
+  assert.equal(reopened.element('note').value, 'Latest');
+  reopened.element('note').value = '';
+  await reopened.element('note').input();
+  reopened.element('like-colors').checked = true;
+  await reopened.element('like-colors').change();
+  reopened.element('like-colors').checked = false;
+  await reopened.element('like-colors').change();
+  const cleared = await popupHarness({ sharedDrafts: first.drafts });
+  assert.equal(cleared.element('note').value, '');
+  assert.equal(cleared.element('like-colors').checked, false);
+});
+
+test('popup waits for draft restoration before enabling editing', async () => {
+  let release;
+  const draftReadGate = new Promise(resolve => { release = resolve; });
+  const popup = await popupHarness({ draftReadGate, waitForReady: false,
+    sharedDrafts: new Map([['capture-draft:https://example.com/one', { schema_version: 1, note: 'Remembered' }]]) });
+  assert.equal(popup.element('note').disabled, true);
+  release();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(popup.element('note').disabled, false);
+  assert.equal(popup.element('note').value, 'Remembered');
+});
+
+test('draft storage failures stay visible without losing the current form or blocking capture', async () => {
+  const readFailed = await popupHarness({ draftReadError: new Error('Unavailable') });
+  assert.match(readFailed.element('message').textContent, /Could not restore/);
+  assert.equal(readFailed.element('note').disabled, false);
+  const popup = await popupHarness({ draftWriteError: new Error('Full'),
+    savedHandle: { name: 'Refs', async queryPermission() { return 'granted'; } } });
+  popup.element('note').value = 'Keep this note';
+  await popup.element('note').input();
+  assert.match(popup.element('message').textContent, /Could not keep this form/);
+  assert.equal(popup.element('note').value, 'Keep this note');
+  await popup.element('start').click();
+  assert.equal(popup.closed, true);
+  assert.equal(popup.messages.find(message => message.type === 'CAPTURE_START').note, 'Keep this note');
+  popup.setDraftWriteError(null);
+  await popup.element('note').input();
+  assert.equal(popup.element('message').hidden, true);
+});
 
 test('folder choice stays in the popup, preserves context, and persists for the next popup', async () => {
   let popup = await popupHarness();
@@ -909,11 +1132,14 @@ test('popup sends optional taste context and title without carrying choices to a
   assert.deepEqual(JSON.parse(JSON.stringify(sent.preferences)), { liked_aspects: ['colors', 'motion'] });
   assert.equal(sent.note, '  Intro "Привіт" — Studio project\nSkip the footer. Keep the hero.  ');
   assert.deepEqual(Array.from(sent.tags), ['portfolio', 'studio refresh']);
-  const next = await popupHarness({ tabUrl: 'https://other.example/', sharedConfig: first.config });
+  const next = await popupHarness({ tabUrl: 'https://other.example/', sharedConfig: first.config, sharedDrafts: first.drafts });
   await next.element('start').click();
   const blank = next.messages.find(message => message.type === 'CAPTURE_START');
   assert.deepEqual(JSON.parse(JSON.stringify(blank.preferences)), { liked_aspects: [] });
   assert.equal(blank.note, '');
+  const returned = await popupHarness({ sharedConfig: first.config, sharedDrafts: first.drafts });
+  assert.equal(returned.element('note').value, sent.note);
+  assert.equal(returned.element('like-colors').checked, true);
 });
 
 test('taste inputs disable during capture and retain values on start failure', async () => {
@@ -928,6 +1154,33 @@ test('taste inputs disable during capture and retain values on start failure', a
   assert.equal(popup.element('like-layout').checked, true);
   assert.equal(popup.element('note').value, 'No shadows');
   assert.equal(popup.element('note').disabled, false);
+  const reopened = await popupHarness({ sharedDrafts: popup.drafts });
+  assert.equal(reopened.element('note').value, 'No shadows');
+  assert.equal(reopened.element('like-layout').checked, true);
+});
+
+test('completed Auto capture retains the form for a later Manual pass', async () => {
+  const auto = await popupHarness({ savedHandle: { name: 'Refs', async queryPermission() { return 'granted'; } } });
+  auto.element('note').value = 'Use the gradient and spacing';
+  auto.element('tags').value = 'scroll-driven, portfolio';
+  auto.element('like-colors').checked = true;
+  auto.element('like-spacing').checked = true;
+  await auto.element('start').click();
+  const first = auto.messages.find(message => message.type === 'CAPTURE_START');
+  assert.equal(first.mode, 'auto');
+  // Reopen after the background reports no active capture.
+  const manual = await popupHarness({ sharedConfig: auto.config, sharedDrafts: auto.drafts, activeCapture: null });
+  assert.equal(manual.element('note').value, first.note);
+  assert.equal(manual.element('like-colors').checked, true);
+  manual.element('mode-manual').checked = true;
+  manual.element('mode-auto').checked = false;
+  manual.element('mode-manual').change();
+  await manual.element('start').click();
+  const next = manual.messages.find(message => message.type === 'CAPTURE_START');
+  assert.equal(next.mode, 'manual');
+  assert.equal(next.note, first.note);
+  assert.deepEqual(Array.from(next.tags), Array.from(first.tags));
+  assert.deepEqual(JSON.parse(JSON.stringify(next.preferences)), JSON.parse(JSON.stringify(first.preferences)));
 });
 
 test('popup switches between Page and Selection without dropping taste context, and cancels an active picker', async () => {
@@ -1007,7 +1260,8 @@ test('popup requests folder access again and keeps start errors visible', async 
   const popup = await popupHarness({ savedHandle, startResponse: { ok: false, error: 'Tab changed' } });
   assert.equal(popup.element('folder-name').textContent, 'Design references');
   assert.equal(popup.element('state-badge').hidden, true);
-  assert.equal(popup.element('folder-hint').hidden, true);
+  assert.equal(popup.element('folder-hint').hidden, false);
+  assert.match(popup.element('folder-hint').textContent, /Used by all capture modes/);
   assert.equal(permissionRequests, 0, 'opening the popup must not request permission');
   assert.equal(popup.element('start').disabled, false);
   await popup.element('start').click();
@@ -1082,7 +1336,7 @@ test('failed Stop leaves recording retryable', async () => {
   assert.equal(app.state.get('capture').phase, 'recording');
 });
 
-function contentControlHarness({ screenshotError = null, pageHeight = 2200, growingPage = false, scrollBlocked = false, warnings = [] } = {}) {
+function contentControlHarness({ screenshotError = null, saveError = null, pageHeight = 2200, growingPage = false, scrollBlocked = false, warnings = [] } = {}) {
   const listeners = [];
   const messages = [];
   const timers = new Map();
@@ -1186,7 +1440,7 @@ function contentControlHarness({ screenshotError = null, pageHeight = 2200, grow
             callback(screenshotError ? { error: screenshotError } : { dataUrl: 'data:image/png;base64,AA==' });
           });
         }
-        else if (message.type === 'CAPTURE_BUNDLE_READY') callback({ ok: true, result: { folderName: 'bundle', viewport: 'desktop', warnings } });
+        else if (message.type === 'CAPTURE_BUNDLE_READY') callback(saveError ? { ok: false, error: saveError } : { ok: true, result: { folderName: 'bundle', viewport: 'desktop', warnings } });
         else callback?.({ ok: true });
       },
       lastError: null
@@ -1252,19 +1506,26 @@ test('Auto records and captures screenshots in one pass, then reuses them during
   assert.equal(auto.tracksStopped, true);
 });
 
-test('saved captures expose folder-guide warnings on the page without reporting capture failure', async () => {
-  const warning = 'Folder reading guide unavailable. Capture files are saved; check folder access and guide filenames.';
-  const auto = contentControlHarness({ warnings: [warning] });
+test('optional preview warnings use the ordinary saved banner and dismissal time', async () => {
+  const auto = contentControlHarness({ warnings: ['Video stills unavailable.', 'Page tiles incomplete.', 'Folder reading guide unavailable.'] });
   await auto.send({ type: 'INJECT_BANNER' });
   await auto.send({ type: 'START_RECORDING', streamId: 'stream', mode: 'auto' });
   await auto.runUntil(() => auto.banner.dataset.state === 'saved');
-  assert.match(auto.banner.querySelector('.state').textContent, /check warning/);
-  assert.equal(auto.banner.querySelector('.shots').textContent, 'bundle/desktop · ' + warning);
+  assert.equal(auto.banner.querySelector('.state').textContent, 'Saved');
+  assert.equal(auto.banner.querySelector('.shots').textContent, 'bundle/desktop');
   assert.equal(auto.messages.some(message => message.type === 'CAPTURE_FAILED'), false);
   await auto.advance(8000);
-  assert.equal(auto.controlRemovals.length, 0, 'warning remains visible longer than ordinary saved result');
-  await auto.advance(8000);
   assert.equal(auto.controlRemovals.length, 1);
+});
+
+test('failed core writes still show the save error and report capture failure', async () => {
+  const auto = contentControlHarness({ saveError: 'Disk unavailable' });
+  await auto.send({ type: 'INJECT_BANNER' });
+  await auto.send({ type: 'START_RECORDING', streamId: 'stream', mode: 'auto' });
+  await auto.runUntil(() => auto.banner.dataset.state === 'failed');
+  assert.equal(auto.banner.querySelector('.state').textContent, 'Save failed');
+  assert.equal(auto.banner.querySelector('.shots').textContent, 'Disk unavailable');
+  assert.equal(auto.messages.find(message => message.type === 'CAPTURE_FAILED').error, 'Disk unavailable');
 });
 
 test('Stop during Auto saves captured tiles without starting a second scroll pass', async () => {
@@ -1434,4 +1695,11 @@ test('contact-sheet seeks resolve at the current frame and time out if decoding 
   };
   await seekTo(video, 1);
   await assert.rejects(seekTo(video, 2), /timed out/);
+});
+
+test('rectangle capture rejects a changed viewport, scrolling, zoom or malformed dimensions',()=>{
+  const before={width:1000,height:800,x:0,y:100,ratio:2,scale:1,offsetX:0,offsetY:0};
+  assert.ok(sameViewport(before,{...before}));
+  for(const change of [{width:900},{height:750},{x:20},{y:101},{ratio:1},{scale:1.5},{offsetX:5},{offsetY:3},{width:NaN}])assert.ok(!sameViewport(before,{...before,...change}));
+  assert.ok(!sameViewport(before,null));
 });

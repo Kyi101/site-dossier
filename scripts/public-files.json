@@ -7,6 +7,8 @@
     "PRIVACY.md",
     "README.md",
     "background/background.js",
+    "background/collector.mjs",
+    "background/rectangle.mjs",
     "content/banner.css",
     "content/content.js",
     "content/selection.css",
@@ -30,8 +32,14 @@
     "scripts/public-push-guard.py",
     "scripts/public-release-check.mjs",
     "scripts/test-public-push-guard.py",
+    "scripts/verify-library.mjs",
     "scripts/verify.mjs",
-    "shared/capture-math.js"
+    "shared/capture-math.js",
+    "shared/collector-db.mjs",
+    "shared/library.mjs",
+    "sidepanel/sidepanel.css",
+    "sidepanel/sidepanel.html",
+    "sidepanel/sidepanel.mjs"
   ],
   "published_baselines": [
     "b0c0056ed10d779fde894534c24a7ddf9228c55f"

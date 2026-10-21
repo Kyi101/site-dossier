@@ -34,7 +34,7 @@ async function writeBundle(payload) {
   const isSelection = payload.kind === 'selection';
   if (isSelection) validateSelections(payload.selection);
 
-  // Folder name: {host-slug}-{YYYY-MM-DD}
+  // New folders keep the first capture's date; later captures reuse that folder.
   const url = new URL(payload.url);
   const host = url.host.replace(/^www\./, '').replace(/\./g, '-');
   const date = payload.startedAt.split('T')[0];
@@ -48,36 +48,30 @@ async function writeBundle(payload) {
   const preferences = normalizePreferences(payload.preferences);
   const warnings = [];
 
-  // A host can have several captured pages on one day. Merge only when
-  // url.txt matches the exact source URL; otherwise allocate a new suffix.
-  let bundleDir;
-  let isMerge = false;
-  let folderName = baseFolderName;
-  for (let n = 1; ; n++) {
+  // Search the selected library by exact URL before allocating a dated folder.
+  const existingBundle = await findPageBundle(handle, payload.url);
+  let bundleDir = existingBundle?.bundleDir;
+  let isMerge = Boolean(existingBundle);
+  let folderName = existingBundle?.folderName || baseFolderName;
+  for (let n = 1; !bundleDir; n++) {
     folderName = n === 1 ? baseFolderName : `${baseFolderName}-${n}`;
+    let candidate;
     try {
-      bundleDir = await handle.getDirectoryHandle(folderName, { create: false });
+      candidate = await handle.getDirectoryHandle(folderName, { create: false });
     } catch (err) {
       if (err.name !== 'NotFoundError') throw err;
       bundleDir = await handle.getDirectoryHandle(folderName, { create: true });
       break;
     }
-
-    let existingUrl = null;
-    try {
-      const file = await bundleDir.getFileHandle('url.txt', { create: false });
-      existingUrl = (await (await file.getFile()).text()).trim();
-    } catch (err) {
-      if (err.name !== 'NotFoundError') throw err;
-    }
-    if (existingUrl === payload.url) {
+    // Recheck in case a matching folder appeared after the library scan.
+    if (await readBundleUrl(candidate) === payload.url) {
+      bundleDir = candidate;
       isMerge = true;
-      break;
     }
   }
 
   // Viewport subfolder. If THIS viewport already exists inside the bundle
-  // (user captured desktop twice on same day), suffix -2, -3, etc.
+  // (user captured desktop before), suffix -2, -3, etc.
   let viewportDir;
   let viewportDirName = viewportName;
   if (isMerge) {
@@ -217,6 +211,32 @@ async function writeBundle(payload) {
 
   statusEl.textContent = `${isMerge ? 'Merged into' : 'Wrote'} ${folderName}/${viewportDirName}/`;
   return { folderName, viewport: viewportDirName, merged: isMerge, warnings };
+}
+
+async function readBundleUrl(dir) {
+  try {
+    const file = await dir.getFileHandle('url.txt', { create: false });
+    return (await (await file.getFile()).text()).trim();
+  } catch (err) {
+    // Missing or non-file URL markers are not capture bundles. Real I/O errors
+    // must surface rather than silently creating a second folder for a page.
+    if (['NotFoundError', 'TypeMismatchError'].includes(err.name)) return null;
+    throw err;
+  }
+}
+
+async function findPageBundle(root, sourceUrl) {
+  const matches = [];
+  for await (const [folderName, bundleDir] of root.entries()) {
+    if (bundleDir.kind !== 'directory') continue;
+    if (await readBundleUrl(bundleDir) === sourceUrl) matches.push({ folderName, bundleDir });
+  }
+  // Older releases could create one folder per day. Prefer the earliest dated
+  // match, then name order, without relying on filesystem enumeration order.
+  const key = ({ folderName }) =>
+    (folderName.match(/-(\d{4}-\d{2}-\d{2})(?:-\d+)?$/)?.[1] || '\uffff') + '/' + folderName;
+  matches.sort((a, b) => key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0);
+  return matches[0] || null;
 }
 
 function validateSelections(selection) {

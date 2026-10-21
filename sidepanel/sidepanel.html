@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Site Dossier · Collect</title><link rel="stylesheet" href="../popup/popup.css"><link rel="stylesheet" href="sidepanel.css"></head>
+<body><main>
+<header class="masthead"><div class="brand"><img src="../icons/48.png" width="28" height="28" alt="">Site Dossier</div><span class="eyebrow">Collect</span></header>
+<h1>Collect references</h1><p class="intro">Images, screenshots, and the details worth keeping.</p>
+<section class="folder section"><span class="eyebrow">Library folder</span><div class="folder-row"><strong id="folder">No folder selected</strong><button id="choose-folder" class="folder-button">Choose</button></div><p class="hint">Used by all capture modes. Images and notes stay together.</p></section>
+<section id="drop-zone" class="drop" aria-label="Collect web images"><strong>Drag images from the web</strong><span>Drop here or paste a copied image</span></section>
+<div class="capture-actions"><button id="screenshot" class="secondary">＋ Screenshot</button><button id="rectangle" class="secondary">▭ Rectangle</button></div>
+<p class="hint">Capture the visible page or draw a rectangle around a detail.</p>
+<details class="url-import"><summary>Add an image link</summary><div class="url-row"><input id="image-url" type="url" aria-label="Image URL" placeholder="https://…/image.jpg"><button id="add-url" class="secondary">Add</button></div></details>
+<section class="section batch"><label>Project<input id="project" maxlength="200" list="projects" placeholder="e.g. App redesign"></label><datalist id="projects"></datalist><label>Tags <span class="hint">· comma separated</span><input id="tags" maxlength="2000" placeholder="editorial, bold type"></label><div class="category-field"><div class="category-heading"><label for="category">Category</label><button id="category-inbox" class="text" type="button" hidden>Use Inbox</button></div><input id="category" list="categories" maxlength="200" placeholder="Inbox — organize later"><datalist id="categories"><option>Web design</option><option>App design</option><option>Banner design</option></datalist></div><p class="hint">Inbox by default — add a category whenever you’re ready. Choose or type a category when you’re ready.</p></section>
+<div class="tray-heading"><h2>Your tray <span id="count">0</span></h2><span class="hint">Kept when you close this panel</span></div>
+<div id="tray"></div>
+<footer><p id="status" role="status" aria-live="polite"></p><p id="error" role="alert" hidden></p><button id="save" class="start-button" disabled>Save references</button><p class="hint" id="save-hint">Images and notes save together to your library.</p></footer>
+</main><script type="module" src="sidepanel.mjs"></script></body></html>

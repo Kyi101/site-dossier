@@ -275,10 +275,8 @@
         const label = recordingStopReason === 'time-limit' ? 'Saved — 3-minute limit' :
           recordingStopReason === 'stream-ended' ? 'Saved — recording ended' :
           ['time-limit', 'scroll-blocked'].includes(screenshotStopReason) ? 'Saved — partial screenshot' : 'Saved';
-        const warnings = response.result.warnings || [];
-        setBannerState('saved', warnings.length ? `${label} — check warning` : label,
-          `${response.result.folderName}/${response.result.viewport}` + (warnings.length ? ` · ${warnings.join(' ')}` : ''));
-        scheduleBannerRemoval(warnings.length ? 16000 : 8000, 'saved');
+        setBannerState('saved', label, `${response.result.folderName}/${response.result.viewport}`);
+        scheduleBannerRemoval(8000, 'saved');
       } catch (err) {
         console.error('[design-capture] onstop FAILED:', err);
         setBannerState('failed', 'Save failed', String(err.message || err));

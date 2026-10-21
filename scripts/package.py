@@ -12,6 +12,13 @@ ROOT = Path(__file__).resolve().parents[1]
 FILES = (
     "manifest.json",
     "background/background.js",
+    "background/collector.mjs",
+    "background/rectangle.mjs",
+    "shared/library.mjs",
+    "shared/collector-db.mjs",
+    "sidepanel/sidepanel.html",
+    "sidepanel/sidepanel.css",
+    "sidepanel/sidepanel.mjs",
     "content/content.js",
     "content/selection.js",
     "content/selection.css",

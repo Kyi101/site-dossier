@@ -6,6 +6,7 @@ const guidanceEl = document.getElementById('guidance');
 const messageEl = document.getElementById('message');
 const noteEl = document.getElementById('note');
 const tagsEl = document.getElementById('tags');
+const noteFieldsEl = document.getElementById('note-fields');
 const likedAspects = ['colors', 'typography', 'layout', 'spacing', 'imagery', 'motion', 'interactions', 'details'];
 const tasteInputs = likedAspects.map(aspect => document.getElementById(`like-${aspect}`));
 const startBtn = document.getElementById('start');
@@ -47,6 +48,20 @@ let loading = true;
 let busy = false;
 let busyAction = null;
 let folderChosen = false;
+let draftKey = null;
+const libraryChannel = new BroadcastChannel('site-dossier-library-folder');
+libraryChannel.onmessage=async()=>{
+  if(loading||busy||capture)return;
+  try {
+    const next=await readStoredHandle();
+    if(loading||busy||capture)return;
+    folderHandle=next;folderUnavailable=false;
+    try {folderPermission=next?await next.queryPermission({mode:'readwrite'}):'prompt';}
+    catch {folderPermission='prompt';folderUnavailable=true;}
+    render();
+  } catch {showError('Could not refresh the library folder. Reopen the popup.');}
+};
+const draftSaveError = 'Could not keep this form for later. Copy your note before closing the popup.';
 
 render();
 void initialize();
@@ -58,7 +73,18 @@ async function initialize() {
     chrome.runtime.sendMessage({ type: 'CAPTURE_STATUS' })
   ]);
 
-  if (tabResult.status === 'fulfilled') activeTab = tabResult.value[0] || null;
+  if (tabResult.status === 'fulfilled') {
+    activeTab = tabResult.value[0] || null;
+    if (activeTab && isRecordableUrl(activeTab.url)) {
+      draftKey = `capture-draft:${activeTab.url}`;
+      try {
+        const stored = await chrome.storage.local.get(draftKey);
+        restoreDraft(stored[draftKey]);
+      } catch {
+        showError('Could not restore this page’s form. Reopen the popup to try again.');
+      }
+    }
+  }
   if (folderResult.status === 'fulfilled' && !folderChosen) folderHandle = folderResult.value;
   if (statusResult.status === 'fulfilled' && statusResult.value?.ok) {
     capture = statusResult.value.capture;
@@ -77,6 +103,42 @@ async function initialize() {
   render();
 }
 
+function restoreDraft(draft) {
+  if (!draft || draft.schema_version !== 1) return;
+  noteEl.value = typeof draft.note === 'string' ? draft.note : '';
+  tagsEl.value = typeof draft.tags === 'string' ? draft.tags : '';
+  for (const [index, aspect] of likedAspects.entries()) {
+    tasteInputs[index].checked = Array.isArray(draft.liked_aspects) && draft.liked_aspects.includes(aspect);
+  }
+  selectionKindEl.checked = draft.kind === 'selection';
+  pageKindEl.checked = !selectionKindEl.checked;
+  manualModeEl.checked = draft.mode === 'manual';
+  autoModeEl.checked = !manualModeEl.checked;
+  rectangleEl.checked = draft.selection_tool === 'rectangle';
+  elementsEl.checked = !rectangleEl.checked;
+  noteFieldsEl.open = typeof draft.notes_open === 'boolean' ? draft.notes_open : Boolean(noteEl.value || tagsEl.value);
+}
+
+async function saveDraft() {
+  if (loading || !draftKey) return;
+  try {
+    // Send each edit immediately: a popup can close before a debounce or unload handler runs.
+    await chrome.storage.local.set({ [draftKey]: {
+      schema_version: 1,
+      note: noteEl.value,
+      tags: tagsEl.value,
+      liked_aspects: likedAspects.filter((aspect, index) => tasteInputs[index].checked),
+      kind: selectionKindEl.checked ? 'selection' : 'page',
+      mode: manualModeEl.checked ? 'manual' : 'auto',
+      selection_tool: rectangleEl.checked ? 'rectangle' : 'element',
+      notes_open: noteFieldsEl.open
+    } });
+    if (messageEl.textContent === draftSaveError) clearError();
+  } catch {
+    showError(draftSaveError);
+  }
+}
+
 function render() {
   const selectionMode = Boolean(selectionKindEl.checked);
   const recordable = activeTab && isRecordableUrl(activeTab.url);
@@ -90,11 +152,11 @@ function render() {
   folderHintEl.textContent = folderUnavailable
     ? 'Choose a folder again.'
     : folderHandle
-      ? folderPermission === 'denied' ? 'Folder access was denied. Try Start again or choose another folder.' : ''
-      : 'Choose or create a folder inside Desktop, Documents, or another location.';
+      ? folderPermission === 'denied' ? 'Folder access was denied. Try Start again or choose another folder.' : 'Used by all capture modes. Images and notes stay together.'
+      : 'Choose one folder for website captures, images and screenshots.';
   folderHintEl.hidden = !folderHintEl.textContent;
   pickDirBtn.textContent = busyAction === 'folder' ? 'Choosing…' : folderHandle ? 'Change' : 'Choose';
-  pickDirBtn.title = 'Choose a local save folder';
+  pickDirBtn.title = 'Change the library folder for all capture modes';
   pickDirBtn.disabled = busy || captureActive;
   noteEl.disabled = loading || busy || captureActive || !recordable;
   tagsEl.disabled = noteEl.disabled;
@@ -179,6 +241,7 @@ pickDirBtn.addEventListener('click', async () => {
       mode: 'readwrite', id: 'site-dossier-local', startIn: 'downloads'
     });
     await storeDirHandle(handle);
+    libraryChannel.postMessage('changed');
     folderChosen = true;
     folderHandle = handle;
     folderUnavailable = false;
@@ -196,6 +259,7 @@ pickDirBtn.addEventListener('click', async () => {
 
 startBtn.addEventListener('click', async () => {
   if (startBtn.disabled) return;
+  void saveDraft();
   busy = true;
   busyAction = 'start';
   clearError();
@@ -237,9 +301,12 @@ startBtn.addEventListener('click', async () => {
   }
 });
 
-manualModeEl.addEventListener('change', render);
-autoModeEl.addEventListener('change', render);
-for (const input of [selectionKindEl, pageKindEl, rectangleEl, elementsEl]) input.addEventListener('change', render);
+for (const input of [noteEl, tagsEl]) input.addEventListener('input', saveDraft);
+for (const input of tasteInputs) input.addEventListener('change', saveDraft);
+noteFieldsEl.addEventListener('toggle', saveDraft);
+for (const input of [manualModeEl, autoModeEl, selectionKindEl, pageKindEl, rectangleEl, elementsEl]) {
+  input.addEventListener('change', () => { render(); void saveDraft(); });
+}
 
 stopBtn.addEventListener('click', async () => {
   if (stopBtn.disabled || !capture || !['recording', 'selecting'].includes(capture.phase)) return;
@@ -331,3 +398,9 @@ async function storeDirHandle(handle) {
     tx.onerror = () => reject(tx.error);
   });
 }
+
+// Opening from a toolbar click grants activeTab on the current page.
+document.getElementById('open-collector')?.addEventListener('click', () => {
+  if (!activeTab) return;
+  chrome.sidePanel.open({ windowId: activeTab.windowId }).then(() => window.close()).catch(err => showError(err.message));
+});

@@ -1,3 +1,5 @@
+import './collector.mjs';
+
 // Service worker: routes capture messages. Capture details live in session
 // storage because Chrome can stop this worker while a recording is in progress.
 
@@ -304,9 +306,8 @@ async function handleBundleReady(message, sender) {
       }
     });
     if (!response?.ok) throw new Error(response?.error || 'Bundle write failed.');
-    notify(response.result.warnings?.length ? 'Captured with a warning' : 'Captured',
-      `${response.result.merged ? 'Merged into' : 'Wrote'} ${response.result.folderName}/${response.result.viewport}` +
-      (response.result.warnings?.length ? `. ${response.result.warnings.join(' ')}` : ''));
+    notify('Captured',
+      `${response.result.merged ? 'Merged into' : 'Wrote'} ${response.result.folderName}/${response.result.viewport}`);
     return response.result;
   } catch (err) {
     notify('Capture failed', err.message || String(err));

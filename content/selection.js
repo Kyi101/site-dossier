@@ -399,7 +399,7 @@
         selection: { viewport: before, captured_at: new Date().toISOString(),
           motion: { paused_browser_animations: heldAnimations.size, resumed_after_save: true }, items } });
       if (!response?.ok) throw new Error(response?.error || 'Could not save the selection.');
-      status = `Saved ${response.result.folderName}/${response.result.viewport}` + (response.result.warnings?.length ? ` · ${response.result.warnings.join(' ')}` : '');
+      status = `Saved ${response.result.folderName}/${response.result.viewport}`;
       selected = []; active = -1; hover = null; drag = null;
       view = viewport();
     } catch (err) {
