@@ -76,14 +76,19 @@ function backgroundHarness(shared = {}) {
   const sentToTabs = [];
   const offscreenWrites = [];
   const notifications = [];
+  const streamRequests = [];
   let onTabRemoved = null;
   let onTabUpdated = null;
   let tabUrl = "https://example.com/one";
+  let documentId = 'document-one';
   let activeTabId = 4;
   let streamId = 'stream';
   let offscreenResponse = { ok: true, result: { folderName: 'bundle', viewport: 'desktop', merged: false } };
   let tabStopResponse = { ok: true };
+  let tabStopError = null;
   let switchDuringCapture = null;
+  let snapshotResponse = { ok: true, page: { url: tabUrl, html: '<html>sample</html>', tokens: {},
+    screenshot: { dataUrl: 'data:image/jpeg;base64,AA==' } } };
   const tab = id => ({ id, active: id === activeTabId, windowId: 1, url: tabUrl });
   const chrome = {
     runtime: {
@@ -114,12 +119,14 @@ function backgroundHarness(shared = {}) {
       async query() { return [tab(activeTabId)]; },
       async sendMessage(id, message) {
         sentToTabs.push({ id, message });
+        if (message.type === 'STOP_RECORDING' && tabStopError) throw tabStopError;
+        if (message.type === 'MANUAL_PAGE_SNAPSHOT') return snapshotResponse;
         return message.type === 'STOP_RECORDING' ? tabStopResponse : { ok: true };
       },
       async captureVisibleTab() { captured.push(activeTabId); if (switchDuringCapture !== null) activeTabId = switchDuringCapture; return 'data:image/png;base64,AA=='; }
     },
-    scripting: { async executeScript() { return [{}]; }, async insertCSS() {} },
-    tabCapture: { getMediaStreamId(_options, callback) { callback(streamId); } }
+    scripting: { async executeScript() { return [{ documentId, frameId: 0 }]; }, async insertCSS() {} },
+    tabCapture: { getMediaStreamId(options, callback) { streamRequests.push(options); callback(streamId); } }
   };
   vm.runInNewContext(read('background/background.js').replace("import './collector.mjs';", ''), { chrome, console, Date,
     fetch: async () => ({ ok: true, text: async () => read('content/banner.css') }) });
@@ -130,14 +137,18 @@ function backgroundHarness(shared = {}) {
     resolve(undefined);
   });
   return {
-    send, state, captured, sentToTabs, offscreenWrites, notifications,
+    send, state, captured, sentToTabs, offscreenWrites, notifications, streamRequests,
+    setSnapshotResponse(response) { snapshotResponse = response; },
     setActiveTab(id) { activeTabId = id; },
     setSwitchDuringCapture(id) { switchDuringCapture = id; },
     setStreamId(id) { streamId = id; },
     setOffscreenResponse(response) { offscreenResponse = response; },
     setTabStopResponse(response) { tabStopResponse = response; },
+    setTabStopError(error) { tabStopError = error; },
+    setTabUrl(url) { tabUrl = url; },
+    setDocumentId(id) { documentId = id; },
     removeTab(id) { onTabRemoved(id); },
-    updateTab(url) { tabUrl = url; onTabUpdated(4, { status: "loading", url }); }
+    updateTab(url, change = { status: 'loading', url }) { tabUrl = url; onTabUpdated(4, change); }
   };
 }
 
@@ -148,7 +159,7 @@ const startMessage = {
   preferences: { liked_aspects: ['typography', 'motion'], focus: 'Opening', avoid: 'Gradients', intended_use: 'Portfolio' },
   viewportName: 'desktop', mode: 'auto'
 };
-const fromTab = { tab: { id: 4 } };
+const fromTab = { tab: { id: 4 }, documentId: 'document-one' };
 
 test('selection starts without a media stream, survives restart, and cancels without writing files', async () => {
   const shared = { state: new Map() };
@@ -473,7 +484,7 @@ function writerHarness(rootDir = new FakeDir(), assetFetch = async file => new R
   vm.runInContext(read('offscreen/offscreen.js'), context);
   vm.runInContext('cachedDirHandle = rootDir', context);
   const writeBundle = vm.runInContext('writeBundle', context);
-  return { rootDir, writeBundle };
+  return { rootDir, writeBundle, context };
 }
 
 const bundlePayload = (url = 'https://example.com/one') => ({
@@ -895,6 +906,7 @@ test('last screenshot tile uses actual clamped scroll position', async () => {
 
 async function popupHarness({ tabUrl = 'https://example.com/one', savedHandle = null, activeCapture = null,
   startResponse = { ok: true }, stopResponse = { ok: true }, statusGate = null, waitForReady = true,
+  interruption = null, captureAfterStop = activeCapture,
   sharedConfig = null, pickerError = null, storeError = null, sharedDrafts = null,
   draftReadError = null, draftWriteError = null, draftReadGate = null } = {}) {
   const elements = new Map();
@@ -966,10 +978,10 @@ async function popupHarness({ tabUrl = 'https://example.com/one', savedHandle = 
           messages.push(message);
           if (message.type === 'CAPTURE_STATUS') {
             if (statusGate) await statusGate;
-            return { ok: true, capture: activeCapture };
+            return { ok: true, capture: activeCapture, interruption };
           }
           if (message.type === 'CAPTURE_START') return startResponse;
-          if (message.type === 'CAPTURE_STOP') return stopResponse;
+          if (message.type === 'CAPTURE_STOP') { activeCapture = captureAfterStop; return stopResponse; }
           return { ok: true };
         }
       }
@@ -1336,6 +1348,299 @@ test('failed Stop leaves recording retryable', async () => {
   assert.equal(app.state.get('capture').phase, 'recording');
 });
 
+test('page changes and same-URL reloads end Auto capture and permit a restart', async () => {
+  for (const mode of ['auto']) {
+    for (const change of [{ status: 'loading', url: 'https://example.com/two' }, { status: 'loading' }]) {
+      const app = backgroundHarness();
+      await app.send({ ...startMessage, mode });
+      const url = change.url || startMessage.url;
+      app.setDocumentId('document-two');
+      app.updateTab(url, change);
+      await new Promise(resolve => setImmediate(resolve));
+      const status = await app.send({ type: 'CAPTURE_STATUS' });
+      assert.equal(status.capture, null);
+      assert.match(status.interruption.error, /page changed.*Start a new capture/);
+      assert.equal(app.sentToTabs.filter(item => item.message.type === 'CANCEL_RECORDING').length, 1);
+      assert.equal(app.offscreenWrites.length, 0);
+      assert.equal(app.notifications.at(-1).title, 'Capture ended');
+      const stopped = await app.send({ type: 'CAPTURE_STOP', tabId: 4 }, { id: 'test-extension' });
+      assert.match(stopped.error, /Start a new capture/);
+      const restarted = backgroundHarness({ state: app.state });
+      assert.match((await restarted.send({ type: 'CAPTURE_STATUS' })).interruption.error, /page changed/);
+      assert.equal((await app.send({ ...startMessage, mode, url })).ok, true);
+      assert.equal((await app.send({ type: 'CAPTURE_STATUS' })).interruption, null);
+    }
+  }
+});
+
+test('Stop recovers from a missing content receiver and from a missed URL update', async () => {
+  for (const reason of ['receiver', 'url']) {
+    const app = backgroundHarness();
+    await app.send(startMessage);
+    if (reason === 'receiver') app.setTabStopError(new Error('Could not establish connection. Receiving end does not exist.'));
+    else { app.setTabUrl('https://example.com/two'); app.setDocumentId('document-two'); }
+    const stopped = await app.send({ type: 'CAPTURE_STOP', tabId: 4 }, { id: 'test-extension' });
+    assert.equal(stopped.ok, false);
+    assert.match(stopped.error, /Start a new capture/);
+    assert.doesNotMatch(stopped.error, /Receiving end/);
+    assert.equal((await app.send({ type: 'CAPTURE_STATUS' })).capture, null);
+    assert.equal(app.offscreenWrites.length, 0);
+  }
+});
+
+test('scroll-driven history and hash updates keep recording and screenshots on the original document', async () => {
+  for (const mode of ['auto']) {
+    const app = backgroundHarness();
+    await app.send({ ...startMessage, mode });
+    for (const url of ['https://example.com/one#section-2', 'https://example.com/chapter-3?scroll=1']) {
+      app.updateTab(url, { url });
+      app.updateTab(url, { status: 'loading' });
+      app.updateTab(url, { status: 'complete' });
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal((await app.send({ type: 'CAPTURE_STATUS' })).capture.phase, 'recording');
+      assert.match((await app.send({ type: 'CAPTURE_VISIBLE_TAB' }, fromTab)).dataUrl, /^data:image/);
+    }
+    const wrongDocument = { tab: { id: 4 }, documentId: 'document-two' };
+    assert.equal((await app.send({ type: 'CAPTURE_VISIBLE_TAB' }, wrongDocument)).dataUrl, undefined);
+    assert.equal((await app.send({ type: 'CAPTURE_FAILED', error: 'old page' }, wrongDocument)).ok, true);
+    assert.equal(app.state.get('capture').phase, 'recording');
+    assert.equal((await app.send({ type: 'CAPTURE_STOP', tabId: 4 }, { id: 'test-extension' })).ok, true);
+    assert.equal((await app.send({ type: 'CAPTURE_BUNDLE_READY', video: {}, screenshot: {}, html: '', tokens: {} }, fromTab)).ok, true);
+    assert.equal(app.offscreenWrites[0].payload.url, startMessage.url, 'bundle remains associated with the starting URL');
+    assert.equal(app.offscreenWrites[0].payload.mode, mode);
+    assert.equal(app.notifications.some(item => item.title === 'Capture ended'), false);
+  }
+});
+
+test('a replacement document is rejected even if its URL is unchanged', async () => {
+  const app = backgroundHarness();
+  await app.send(startMessage);
+  app.setDocumentId('replacement-document');
+  const screenshot = await app.send({ type: 'CAPTURE_VISIBLE_TAB' }, fromTab);
+  assert.match(screenshot.error, /page changed/);
+  assert.equal(app.captured.length, 0);
+  const stopped = await app.send({ type: 'CAPTURE_STOP', tabId: 4 }, { id: 'test-extension' });
+  assert.match(stopped.error, /Start a new capture/);
+  assert.equal((await app.send({ type: 'CAPTURE_STATUS' })).capture, null);
+});
+
+test('navigation cancels page processing but preserves a bundle already writing offscreen', async () => {
+  for (const phase of ['processing', 'saving']) {
+    const app = backgroundHarness();
+    await app.send(startMessage);
+    app.state.set('capture', { ...app.state.get('capture'), phase });
+    app.setDocumentId('document-two');
+    app.updateTab('https://example.com/two');
+    await new Promise(resolve => setImmediate(resolve));
+    const status = await app.send({ type: 'CAPTURE_STATUS' });
+    if (phase === 'saving') {
+      assert.equal(status.capture.phase, 'saving');
+      assert.equal(app.sentToTabs.some(item => item.message.type === 'CANCEL_RECORDING'), false);
+    } else {
+      assert.equal(status.capture, null);
+      assert.equal((await app.send({ type: 'CAPTURE_PROCESSING' }, fromTab)).ok, false);
+      assert.equal((await app.send({ type: 'CAPTURE_BUNDLE_READY' }, fromTab)).ok, false);
+    }
+  }
+});
+
+test('popup shows the interruption and restores Start after a failed Stop', async () => {
+  const error = 'The page changed. Start a new capture on the current page.';
+  const options = { savedHandle: { name: 'Test folder', async queryPermission() { return 'granted'; } } };
+  const reopened = await popupHarness({ ...options, interruption: { tabId: 4, error } });
+  assert.equal(reopened.element('message').textContent, error);
+  assert.equal(reopened.element('start').disabled, false);
+  assert.equal(reopened.element('stop').hidden, true);
+  const open = await popupHarness({ ...options,
+    activeCapture: { tabId: 4, phase: 'recording', mode: 'manual' },
+    stopResponse: { ok: false, error }, captureAfterStop: null });
+  await open.element('stop').click();
+  assert.match(open.element('message').textContent, /page changed/);
+  assert.equal(open.element('start').disabled, false);
+  assert.equal(open.element('start').hidden, false);
+  assert.equal(open.element('stop').hidden, true);
+});
+
+const fromOffscreen = { id: 'test-extension', url: 'chrome-extension://test/offscreen/offscreen.html' };
+
+test('Manual recorder survives document replacement and worker restart, and Stop does not need the old content receiver', async () => {
+  const app = backgroundHarness();
+  assert.equal((await app.send({ ...startMessage, mode: 'manual' })).ok, true);
+  const captureId = app.state.get('capture').startedAt;
+  assert.equal(app.streamRequests[0].consumerTabId, undefined);
+  assert.equal(app.offscreenWrites[0].type, 'OFFSCREEN_MANUAL_START');
+  assert.equal(app.sentToTabs.some(item => item.message.type === 'START_RECORDING'), false);
+  app.setDocumentId('new-document');
+  app.updateTab('https://other.example/page');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(app.state.get('capture').phase, 'recording');
+  assert.equal(app.state.get('capture').documentId, 'new-document');
+  assert.equal(app.state.get('capture').startedAt, captureId);
+  assert.equal(app.sentToTabs.filter(item => item.message.type === 'ATTACH_MANUAL_CONTROL').length, 2);
+  assert.equal(new Set(app.offscreenWrites.filter(item => item.type === 'OFFSCREEN_MANUAL_PAGE').map(item => item.page.documentId)).size, 2);
+  const restarted = backgroundHarness({ state: app.state });
+  restarted.setTabStopError(new Error('Could not establish connection. Receiving end does not exist.'));
+  assert.equal((await restarted.send({ type: 'CAPTURE_STOP', tabId: 4 }, { id: 'test-extension' })).ok, true);
+  assert.equal(restarted.offscreenWrites.at(-1).type, 'OFFSCREEN_MANUAL_STOP');
+  assert.equal(restarted.sentToTabs.some(item => item.message.type === 'STOP_RECORDING'), false);
+  restarted.setDocumentId('new-document');
+  const finished = await restarted.send({ type: 'MANUAL_VIDEO_READY', captureId, reason: 'user' }, fromOffscreen);
+  assert.equal(finished.ok, true);
+  assert.equal(restarted.offscreenWrites.at(-1).type, 'OFFSCREEN_MANUAL_SAVE');
+  assert.equal(app.state.has('capture'), false);
+});
+
+test('Manual completion rejects foreign/stale messages and saves video when the final page snapshot fails', async () => {
+  const app = backgroundHarness();
+  await app.send({ ...startMessage, mode: 'manual' });
+  const captureId = app.state.get('capture').startedAt;
+  const message = { type: 'MANUAL_VIDEO_READY', captureId, reason: 'time-limit' };
+  assert.equal((await app.send(message, fromTab)).ok, false);
+  assert.equal((await app.send({ ...message, captureId: 'old' }, fromOffscreen)).ok, false);
+  assert.equal((await app.send({ type: 'CAPTURE_BUNDLE_READY' }, fromTab)).ok, false);
+  assert.equal(app.state.get('capture').phase, 'recording');
+  app.setSnapshotResponse({ ok: false, error: 'page navigated while taking screenshots' });
+  assert.equal((await app.send(message, fromOffscreen)).ok, true);
+  assert.equal(app.offscreenWrites.at(-1).type, 'OFFSCREEN_MANUAL_SAVE');
+  assert.equal(app.sentToTabs.findLast(item => item.message.type === 'MANUAL_CAPTURE_STATE').message.label, 'Saved — 3-minute limit');
+  assert.equal(app.notifications.at(-1).title, 'Captured');
+});
+
+test('closing the Manual recording tab asks offscreen to save instead of deleting its session', async () => {
+  const app = backgroundHarness();
+  await app.send({ ...startMessage, mode: 'manual' });
+  app.removeTab(4);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(app.state.get('capture').continuous, true);
+  assert.equal(app.offscreenWrites.at(-1).type, 'OFFSCREEN_MANUAL_STOP');
+  assert.equal(app.offscreenWrites.at(-1).reason, 'tab-closed');
+});
+
+test('a Manual write failure reports a real failure and clears the busy session', async () => {
+  const app = backgroundHarness();
+  await app.send({ ...startMessage, mode: 'manual' });
+  app.setOffscreenResponse({ ok: false, error: 'disk full' });
+  const response = await app.send({ type: 'MANUAL_VIDEO_READY', captureId: app.state.get('capture').startedAt, reason: 'user' }, fromOffscreen);
+  assert.equal(response.ok, false);
+  assert.equal(response.error, 'disk full');
+  assert.equal(app.notifications.at(-1).title, 'Capture failed');
+  assert.equal(app.state.has('capture'), false);
+});
+
+test('Manual Stop recovers if its offscreen recorder has disappeared', async () => {
+  const app = backgroundHarness();
+  await app.send({ ...startMessage, mode: 'manual' });
+  app.setOffscreenResponse({ ok: false, error: 'No manual recording for this capture.' });
+  const stopped = await app.send({ type: 'CAPTURE_STOP', tabId: 4 }, { id: 'test-extension' });
+  assert.equal(stopped.ok, false);
+  assert.match(stopped.error, /Start a new capture/);
+  assert.equal((await app.send({ type: 'CAPTURE_STATUS' })).capture, null);
+});
+
+function manualRecorderHarness() {
+  const listeners = [], events = [], timers = new Map();
+  let now = 1000, stoppedTracks = 0, getUserMediaOptions;
+  const track = { stop() { stoppedTracks++; }, addEventListener() {} };
+  class Recorder {
+    state = 'inactive';
+    start() { this.state = 'recording'; }
+    stop() {
+      this.state = 'inactive';
+      queueMicrotask(() => {
+        this.ondataavailable({ data: new Blob(['continuous-video']) });
+        void this.onstop();
+      });
+    }
+  }
+  class FakeDate extends Date { static now() { return now; } }
+  const writer = writerHarness(new FakeDir(), undefined, {
+    MediaRecorder: Recorder, Date: FakeDate,
+    navigator: { mediaDevices: { async getUserMedia(options) { getUserMediaOptions = options; return { getTracks: () => [track] }; } } },
+    setTimeout(fn, delay) { const id = timers.size + 1; timers.set(id, { fn, delay }); return id; },
+    clearTimeout(id) { timers.delete(id); },
+    chrome: { runtime: {
+      onMessage: { addListener(fn) { listeners.push(fn); } }, getURL: value => value,
+      async sendMessage(message) { events.push(message); return { ok: true }; }
+    } }
+  });
+  const send = message => new Promise(resolve => listeners[0]({ target: 'offscreen', ...message }, {}, resolve));
+  return { ...writer, send, events, timers, setNow(value) { now = value; },
+    get stoppedTracks() { return stoppedTracks; }, get constraints() { return getUserMediaOptions; } };
+}
+
+test('offscreen owns one Manual video and writes separately attributed document evidence', async () => {
+  const app = manualRecorderHarness();
+  const capture = { ...bundlePayload(), documentId: 'first-document', title: 'First page', mode: 'manual', kind: 'page' };
+  const captureId = capture.startedAt;
+  assert.equal((await app.send({ type: 'OFFSCREEN_MANUAL_START', capture, streamId: 'extension-stream' })).ok, true);
+  assert.equal(app.constraints.audio, false);
+  assert.equal(app.constraints.video.mandatory.chromeMediaSourceId, 'extension-stream');
+  for (const [documentId, url, scope] of [['first-document', capture.url, 'viewport'], ['second-document', 'https://other.example/page', 'full-page']]) {
+    await app.send({ type: 'OFFSCREEN_MANUAL_PAGE', captureId, page: { documentId, url, entryUrl: url, html: '<html>' + documentId + '</html>',
+      tokens: { documentId }, screenshot: { dataUrl: 'data:image/jpeg;base64,AA==', scope }, videoOffsetS: documentId === 'first-document' ? 0 : 1, errors: [] } });
+  }
+  app.setNow(4500);
+  assert.equal((await app.send({ type: 'OFFSCREEN_MANUAL_STOP', captureId, reason: 'user' })).ok, true);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(app.events[0].type, 'MANUAL_VIDEO_READY');
+  assert.equal(app.events[0].durationS, 3.5);
+  assert.equal(app.stoppedTracks, 1);
+  const result = await app.send({ type: 'OFFSCREEN_MANUAL_SAVE', captureId });
+  assert.equal(result.ok, true);
+  const viewport = app.rootDir.dirs.get(result.result.folderName).dirs.get('desktop');
+  assert.equal(viewport.files.get('scroll.webm'), 'continuous-video');
+  assert.equal(viewport.files.get('page.html'), '<html>first-document</html>');
+  const pages = viewport.dirs.get('pages');
+  const index = JSON.parse(pages.files.get('index.json'));
+  assert.equal(index.pages.length, 2);
+  assert.equal(index.pages[1].url, 'https://other.example/page');
+  assert.equal(index.pages[1].screenshot_scope, 'full-page');
+  assert.equal(pages.dirs.get('002').files.get('page.html'), '<html>second-document</html>');
+  assert.equal(pages.dirs.get('002').files.has('scroll.webm'), false);
+  assert.equal(JSON.parse(viewport.files.get('meta.json')).recording_pages.index_file, 'pages/index.json');
+});
+
+test('offscreen enforces the Manual time limit independently and cancellation releases media without saving', async () => {
+  for (const action of ['time-limit', 'cancel']) {
+    const app = manualRecorderHarness();
+    const capture = { ...bundlePayload(), documentId: 'doc', mode: 'manual' };
+    await app.send({ type: 'OFFSCREEN_MANUAL_START', capture, streamId: 'stream' });
+    if (action === 'time-limit') {
+      app.setNow(181000);
+      [...app.timers.values()].find(timer => timer.delay === 180000).fn();
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(app.events[0].reason, 'time-limit');
+      assert.equal(app.events[0].durationS, 180);
+    } else {
+      await app.send({ type: 'OFFSCREEN_MANUAL_CANCEL', captureId: capture.startedAt });
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(app.events.length, 0);
+    }
+    assert.equal(app.stoppedTracks, 1);
+    assert.equal(app.rootDir.dirs.size, 0);
+  }
+});
+
+test('Manual document sampling stays bounded and records omitted page evidence', async () => {
+  const app = manualRecorderHarness();
+  const capture = { ...bundlePayload(), documentId: 'first', mode: 'manual' };
+  await app.send({ type: 'OFFSCREEN_MANUAL_START', capture, streamId: 'stream' });
+  for (let index = 0; index < 26; index++) {
+    await app.send({ type: 'OFFSCREEN_MANUAL_PAGE', captureId: capture.startedAt,
+      page: { documentId: 'doc-' + index, url: 'https://example.com/' + index, html: index === 0 ? 'x'.repeat(4 * 1024 * 1024 + 1) : '<html></html>' } });
+  }
+  await app.send({ type: 'OFFSCREEN_MANUAL_STOP', captureId: capture.startedAt, reason: 'user' });
+  await new Promise(resolve => setImmediate(resolve));
+  const result = await app.send({ type: 'OFFSCREEN_MANUAL_SAVE', captureId: capture.startedAt });
+  const viewport = app.rootDir.dirs.get(result.result.folderName).dirs.get('desktop');
+  const index = JSON.parse(viewport.dirs.get('pages').files.get('index.json'));
+  assert.equal(index.pages.length, 24);
+  assert.equal(index.omitted_pages, 3);
+  assert.equal(index.pages[1].html_file, null);
+  assert.match(index.pages[1].errors[0], /4 MiB/);
+  assert.equal(viewport.files.get('scroll.webm'), 'continuous-video');
+});
+
 function contentControlHarness({ screenshotError = null, saveError = null, pageHeight = 2200, growingPage = false, scrollBlocked = false, warnings = [] } = {}) {
   const listeners = [];
   const messages = [];
@@ -1484,6 +1789,56 @@ function contentControlHarness({ screenshotError = null, saveError = null, pageH
     get banner() { return banner; }, get bannerHost() { return bannerHost; },
     get recorder() { return recorder; }, get tracksStopped() { return tracksStopped; } };
 }
+
+test('Manual page controls show the original session timer and route Stop to the extension', async () => {
+  const app = contentControlHarness();
+  await app.send({ type: 'INJECT_BANNER' });
+  await app.send({ type: 'ATTACH_MANUAL_CONTROL', captureId: 'journey', startedAt: new Date(90000).toISOString() });
+  assert.equal(app.banner.querySelector('.state').textContent, 'Manual recording');
+  assert.equal(app.banner.querySelector('.timer').textContent, '10s');
+  assert.equal(app.recorder, undefined);
+  app.banner.querySelector('button').click();
+  assert.equal(app.messages.at(-1).type, 'CAPTURE_STOP');
+  assert.equal(app.messages.at(-1).captureId, 'journey');
+  await app.send({ type: 'MANUAL_CAPTURE_STATE', captureId: 'journey', state: 'saving', label: 'Saving capture…' });
+  await app.send({ type: 'MANUAL_CAPTURE_STATE', captureId: 'journey', state: 'saved', label: 'Saved', detail: 'bundle/desktop' });
+  assert.equal(app.banner.dataset.state, 'saved');
+  assert.equal(app.banner.querySelector('.shots').textContent, 'bundle/desktop');
+});
+
+test('navigation cancellation stops media without saving or taking more screenshots', async () => {
+  for (const mode of ['manual', 'auto']) {
+    const app = contentControlHarness();
+    await app.send({ type: 'INJECT_BANNER' });
+    await app.send({ type: 'START_RECORDING', streamId: 'stream', mode, captureId: 'current' });
+    await app.send({ type: 'CANCEL_RECORDING', captureId: 'old' });
+    assert.equal(app.recorder.state, 'recording', 'late cancellation must not stop a new capture');
+    await app.send({ type: 'CANCEL_RECORDING', captureId: 'current' });
+    await app.advance(2000);
+    assert.equal(app.recorder.state, 'inactive');
+    assert.equal(app.tracksStopped, true);
+    assert.equal(app.bannerHost.popoverOpen, false);
+    assert.equal(app.messages.some(message => ['CAPTURE_PROCESSING', 'CAPTURE_VISIBLE_TAB', 'CAPTURE_BUNDLE_READY', 'CAPTURE_FAILED'].includes(message.type)), false);
+  }
+});
+
+test('cancelling Manual during its screenshot pass stops further scrolling and saving', async () => {
+  const app = contentControlHarness();
+  await app.send({ type: 'INJECT_BANNER' });
+  await app.send({ type: 'START_RECORDING', streamId: 'stream', mode: 'manual' });
+  await app.send({ type: 'STOP_RECORDING' });
+  await new Promise(resolve => setImmediate(resolve));
+  await app.runNext();
+  const screenshotCount = app.messages.filter(message => message.type === 'CAPTURE_VISIBLE_TAB').length;
+  assert.equal(screenshotCount, 1);
+  await app.send({ type: 'CANCEL_RECORDING' });
+  const scrollCount = app.scrolls.length;
+  await app.advance(5000);
+  assert.equal(app.scrolls.length, scrollCount);
+  assert.equal(app.messages.filter(message => message.type === 'CAPTURE_VISIBLE_TAB').length, screenshotCount);
+  assert.equal(app.messages.some(message => ['CAPTURE_BUNDLE_READY', 'CAPTURE_FAILED'].includes(message.type)), false);
+  assert.equal(app.tracksStopped, true);
+});
 
 test('Auto records and captures screenshots in one pass, then reuses them during saving', async () => {
   const auto = contentControlHarness();

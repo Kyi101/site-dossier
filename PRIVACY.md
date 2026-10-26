@@ -1,6 +1,6 @@
 # Privacy policy for Site Dossier
 
-Last updated: October 21, 2026
+Last updated: October 26, 2026
 
 ## What Site Dossier does
 
@@ -9,6 +9,8 @@ Site Dossier saves local design references after you start a page capture, save 
 ## Information handled
 
 The extension processes the selected page URL, visible tab screenshots and video, the page DOM and computed styles, page-linked CSS and JavaScript text, capture timing/viewport and selection coordinates, and any notes, tags or taste choices you enter. Element selections can include bounded element structure, computed styles and SVG details; rectangle selections save visual evidence without element structure. Manual video may show your visible interactions with the selected page. These inputs are used only to prepare and create your requested local reference bundle.
+
+After you start Manual recording, it continues across page loads and reloads in that same tab, including navigation to other websites, until you stop it or the three-minute limit is reached. It records that tab's video and samples the URLs, titles, page content, styles and viewport images of documents you visit during the recording. Switching tabs does not change which tab is recorded. The final page can be scrolled automatically for its screenshot after recording stops. Closing the recorded tab ends the recording and saves the evidence already available. Pages Chrome does not permit the extension to access end the recording. Manual video and page evidence are held temporarily in the extension's offscreen document while the recording is being prepared for your selected local folder; video is not sent through a server.
 
 Page content can include private or sensitive information, such as personal details, messages, form content, or account information visible on or present in the page. Capture only pages you intend to save. Site Dossier does not separately access Chrome's browsing-history database, read browser cookies or saved passwords through browser APIs, request microphone/webcam/geolocation access, or run an independent keystroke tracker.
 

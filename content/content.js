@@ -15,6 +15,7 @@
   let stoppedAt = null;
   let recordingStopReason = null;
   let screenshotEvidence = null;
+  let manualControl = null;
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === 'INJECT_BANNER') {
@@ -76,7 +77,7 @@
 
   const SAFETY_CAP_S = 180;
   function updateTimer() {
-    if (!banner || recorder?.state !== 'recording') return;
+    if (!banner || (!manualControl && recorder?.state !== 'recording')) return;
     const elapsedSec = Math.floor((Date.now() - startedAt) / 1000);
     const remaining = SAFETY_CAP_S - elapsedSec;
     if (remaining <= 10 && remaining > 0) {
@@ -100,6 +101,15 @@
   }
 
   function stopCapture(reason = 'user') {
+    if (manualControl) {
+      setBannerState('saving', 'Stopping recording…');
+      chrome.runtime.sendMessage({ type: 'CAPTURE_STOP', captureId: manualControl.captureId }, response => {
+        if (chrome.runtime.lastError || !response?.ok) {
+          setBannerState('recording', 'Manual recording', chrome.runtime.lastError?.message || response?.error || 'Try Stop again.');
+        }
+      });
+      return true;
+    }
     if (!recorder || recorder.state !== 'recording') return false;
     stoppedAt = Date.now();
     recordingStopReason = reason;
@@ -147,11 +157,53 @@
   }
 
   let recorder = null;
+  let recordingSession = null;
   let recordedChunks = [];
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message.type === 'ATTACH_MANUAL_CONTROL') {
+      manualControl = { captureId: message.captureId };
+      startedAt = Date.parse(message.startedAt);
+      if (timerInterval) clearInterval(timerInterval);
+      setBannerState('recording', 'Manual recording', 'Continues across pages · 3-minute limit');
+      timerInterval = setInterval(updateTimer, 200);
+      updateTimer();
+      sendResponse({ ok: true });
+      return false;
+    }
+    if (message.type === 'MANUAL_CAPTURE_STATE') {
+      if (manualControl?.captureId !== message.captureId) return false;
+      setBannerState(message.state, message.label, message.detail);
+      if (message.state !== 'recording') {
+        if (['saved', 'failed'].includes(message.state)) manualControl = null;
+        if (timerInterval) clearInterval(timerInterval);
+        timerInterval = null;
+      }
+      if (['saved', 'failed'].includes(message.state)) scheduleBannerRemoval(message.state === 'saved' ? 8000 : 12000, message.state);
+      sendResponse({ ok: true });
+      return false;
+    }
+    if (message.type === 'MANUAL_PAGE_SNAPSHOT') {
+      snapshotManualPage(message).then(page => sendResponse({ ok: true, page }))
+        .catch(err => sendResponse({ ok: false, error: err.message }));
+      return true;
+    }
+    if (message.type === 'CANCEL_RECORDING') {
+      if (message.captureId && message.captureId !== (manualControl?.captureId || recordingSession?.captureId)) {
+        sendResponse({ ok: true });
+        return false;
+      }
+      if (recordingSession) {
+        recordingSession.cancelled = true;
+        if (recorder?.state === 'recording') recorder.stop();
+        recordingSession.stream.getTracks().forEach(track => track.stop());
+      }
+      removeBanner();
+      manualControl = null;
+      sendResponse({ ok: true });
+    }
     if (message.type === 'START_RECORDING') {
-      startRecording(message.streamId, message.mode)
+      startRecording(message.streamId, message.mode, message.captureId)
         .then(() => sendResponse({ ok: true }))
         .catch(err => sendResponse({ ok: false, error: err.message }));
       return true;
@@ -165,7 +217,7 @@
     return false;
   });
 
-  async function startRecording(streamId, mode = 'auto') {
+  async function startRecording(streamId, mode = 'auto', captureId) {
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: false,
       video: {
@@ -175,6 +227,8 @@
         }
       }
     });
+    const session = { stream, captureId, cancelled: false };
+    recordingSession = session;
     recordedChunks = [];
     shotCount = 0;
     stoppedAt = null;
@@ -184,9 +238,10 @@
     let screenshotTask = null;
     recorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp9' });
     recorder.ondataavailable = (e) => {
-      if (e.data && e.data.size > 0) recordedChunks.push(e.data);
+      if (!session.cancelled && e.data && e.data.size > 0) recordedChunks.push(e.data);
     };
     recorder.onstop = async () => {
+      if (session.cancelled) return;
       // A capture stream can end independently of our Stop button/timer.
       // Record its actual end before the screenshot pass adds processing time.
       if (!recordingStopReason) {
@@ -200,10 +255,12 @@
       if (timerInterval) clearInterval(timerInterval);
       timerInterval = null;
       try {
+        if (session.cancelled) return;
         console.log('[design-capture] onstop: building blob (chunks:', recordedChunks.length, ')');
         const blob = new Blob(recordedChunks, { type: 'video/webm' });
         console.log('[design-capture] onstop: blob size', blob.size, 'bytes; converting to data URL');
         const videoDataUrl = await blobToDataUrl(blob);
+        if (session.cancelled) return;
         console.log('[design-capture] onstop: data URL length', videoDataUrl.length);
 
         // Build tokens object — extractors are wrapped in try/catch so partial failure doesn't lose other fields
@@ -223,6 +280,7 @@
         try { tokens.shadows = extractShadows(); } catch (e) { tokens.errors.push('shadows:' + e.message); }
         try { tokens.libraries = await extractLibraries(); } catch (e) { tokens.errors.push('libraries:' + e.message); }
         try { tokens.stack = extractStack(); } catch (e) { tokens.errors.push('stack:' + e.message); }
+        if (session.cancelled) return;
 
         console.log('[design-capture] onstop: tokens built, errors:', tokens.errors);
 
@@ -230,18 +288,22 @@
         // the final page after the user stops their interaction.
         console.log('[design-capture] onstop: finishing screenshot stitch');
         const screenshotResult = screenshotTask ? await screenshotTask : null;
+        if (session.cancelled) return;
         if (screenshotResult?.error) throw screenshotResult.error;
         if (!screenshotResult) {
           setBannerState('saving', 'Taking page screenshots…', 'Scrolling the page automatically');
         }
         const screenshotDataUrl = screenshotResult?.dataUrl || await captureFullPagePng({
-          chunkPause: 600, onScrollComplete: reason => { screenshotStopReason = reason; }
+          chunkPause: 600, isCancelled: () => session.cancelled,
+          onScrollComplete: reason => { screenshotStopReason = reason; }
         });
+        if (session.cancelled) return;
         setBannerState('saving', 'Saving capture…', 'Preparing files');
         console.log('[design-capture] onstop: screenshot done');
 
         console.log('[design-capture] onstop: snapshotting HTML');
         const htmlSnapshot = await captureHtmlSnapshot();
+        if (session.cancelled) return;
         console.log('[design-capture] onstop: HTML length', htmlSnapshot.length);
 
         const durationS = ((stoppedAt || Date.now()) - startedAt) / 1000;
@@ -278,6 +340,7 @@
         setBannerState('saved', label, `${response.result.folderName}/${response.result.viewport}`);
         scheduleBannerRemoval(8000, 'saved');
       } catch (err) {
+        if (session.cancelled) return;
         console.error('[design-capture] onstop FAILED:', err);
         setBannerState('failed', 'Save failed', String(err.message || err));
         chrome.runtime.sendMessage({ type: 'CAPTURE_FAILED', error: err.message || String(err) }, () => {
@@ -302,6 +365,7 @@
     if (mode !== 'manual') {
       screenshotTask = captureFullPagePng({
         chunkPause: 900, smoothScroll: true, restoreScroll: false,
+        isCancelled: () => session.cancelled,
         shouldStop: () => activeRecorder.state !== 'recording',
         onScrollComplete: reason => {
           screenshotStopReason = reason;
@@ -328,6 +392,30 @@
     if (!stopCapture()) throw new Error('Recording is already stopped.');
   }
 
+  async function snapshotManualPage(message) {
+    if (manualControl?.captureId !== message.captureId && !message.final) throw new Error('Recording controls were replaced.');
+    const tokens = await captureTokens();
+    let screenshot = null;
+    if (message.final) {
+      let stopReason;
+      const dataUrl = await captureFullPagePng({ onScrollComplete: reason => { stopReason = reason; } });
+      screenshot = { dataUrl, stopReason, evidence: screenshotEvidence, scope: 'full-page' };
+    }
+    return { url: document.location.href, title: document.title, html: await captureHtmlSnapshot({ inlineResources: Boolean(message.final) }),
+      tokens, screenshot, sampledAt: new Date().toISOString(), viewportSize: { width: window.innerWidth, height: window.innerHeight } };
+  }
+
+  async function captureTokens() {
+    const tokens = { schema_version: 2, observations_only: true,
+      sampling: 'Computed styles and accessible CSS rules; incomplete observations, not an authored design system.',
+      extracted_at: new Date().toISOString(), viewport: { width: window.innerWidth, height: window.innerHeight }, errors: [] };
+    for (const [key, extract] of Object.entries({ colors: extractColors, typography: extractTypography, spacing: extractSpacing,
+      radii_px: extractRadii, shadows: extractShadows, libraries: extractLibraries, stack: extractStack })) {
+      try { tokens[key] = await extract(); } catch (error) { tokens.errors.push(key + ':' + error.message); }
+    }
+    return tokens;
+  }
+
   function blobToDataUrl(blob) {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -338,7 +426,8 @@
   }
 
   async function captureFullPagePng({ chunkPause = 600, timeBudgetMs = SAFETY_CAP_S * 1000,
-    smoothScroll = false, restoreScroll = true, shouldStop = () => false, onScrollComplete = () => {} } = {}) {
+    smoothScroll = false, restoreScroll = true, shouldStop = () => false,
+    isCancelled = () => false, onScrollComplete = () => {} } = {}) {
     const startTime = Date.now();
     const deadline = startTime + timeBudgetMs;
     const originalScrollY = window.scrollY;
@@ -373,6 +462,7 @@
     try {
       let y = 0;
       outer: while (true) {
+        if (isCancelled()) throw new Error('Capture cancelled.');
         if (slices.length && shouldStop()) { stoppedReason = 'stopped'; break; }
         if (Date.now() > deadline) {
           stoppedReason = 'time-limit';
@@ -383,6 +473,7 @@
 
         let x = 0;
         while (true) {
+          if (isCancelled()) throw new Error('Capture cancelled.');
           if (slices.length && shouldStop()) { stoppedReason = 'stopped'; break outer; }
           if (Date.now() > deadline) {
             stoppedReason = 'time-limit';
@@ -399,6 +490,7 @@
           if (smoothScroll) window.scrollTo({ left: targetX, top: targetY, behavior: 'smooth' });
           else window.scrollTo(targetX, targetY);
           await sleep(chunkPause); // lazy-load + sticky nav settle
+          if (isCancelled()) throw new Error('Capture cancelled.');
 
           const actualX = window.scrollX;
           const actualY = window.scrollY;
@@ -416,6 +508,7 @@
 
           let dataUrl = null;
           for (let attempt = 1; attempt <= 3; attempt++) {
+            if (isCancelled()) throw new Error('Capture cancelled.');
             try {
               dataUrl = await requestVisibleTabCapture();
               break;
@@ -436,7 +529,7 @@
         y += viewportHeight;
       }
     } finally {
-      if (restoreScroll) window.scrollTo(originalScrollX, originalScrollY);
+      if (restoreScroll && !isCancelled()) window.scrollTo(originalScrollX, originalScrollY);
     }
 
     // Fallback for horizontal-strip sites driven by transform (e.g. wheel-events
@@ -444,9 +537,9 @@
     // body { overflow: hidden }, normal stitch produces 1 slice. If we find a
     // candidate strip wider than 3 viewports, walk its transform directly.
     let usedWideTrack = false;
-    if (slices.length <= 1 && Date.now() < deadline && !shouldStop()) {
+    if (slices.length <= 1 && Date.now() < deadline && !shouldStop() && !isCancelled()) {
       const walked = await tryWideTrackFallback({
-        slices, deadline, chunkPause, viewportWidth, shouldStop
+        slices, deadline, chunkPause, viewportWidth, shouldStop: () => shouldStop() || isCancelled()
       });
       if (walked) {
         usedWideTrack = true;
@@ -622,11 +715,11 @@
 
   function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-  async function captureHtmlSnapshot() {
+  async function captureHtmlSnapshot({ inlineResources = true } = {}) {
     const doc = document.cloneNode(true);
     doc.querySelector('#site-dossier-root')?.remove();
     doc.querySelector('#design-capture-style')?.remove();
-    const deadline = Date.now() + 15000;
+    const deadline = Date.now() + (inlineResources ? 15000 : 0);
     const maxResourceBytes = 1000000;
     const maxTotalInlineBytes = 8000000;
     let inlinedBytes = 0;

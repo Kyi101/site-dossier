@@ -54,7 +54,8 @@ async function cancelRectangle() {
 }
 async function startRectangle(tabId,windowId) {
   const page=await activePage(tabId,windowId);
-  if((await chrome.storage.session.get('capture')).capture)throw new Error('Finish the current page capture or selection first.');
+  const capture=(await chrome.storage.session.get('capture')).capture;
+  if(capture && capture.phase!=='interrupted')throw new Error('Finish the current page capture or selection first.');
   await cancelRectangle();
   const token=crypto.randomUUID();
   await chrome.storage.session.set({[rectangleKey]:{token,tabId,windowId,url:page.url}});

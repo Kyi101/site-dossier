@@ -88,6 +88,8 @@ async function initialize() {
   if (folderResult.status === 'fulfilled' && !folderChosen) folderHandle = folderResult.value;
   if (statusResult.status === 'fulfilled' && statusResult.value?.ok) {
     capture = statusResult.value.capture;
+    const interruption = statusResult.value.interruption;
+    if (interruption?.tabId === activeTab?.id) showError(interruption.error);
   } else {
     statusUnavailable = true;
   }
@@ -186,7 +188,7 @@ function render() {
       capture.phase === 'stopping' ? 'Stopping' : capture.phase === 'selecting' ? 'Selecting' : 'Recording', 'attention');
     guidanceEl.textContent = capture.phase === 'selecting' ? 'Choose and save on the page, or cancel here.' : capture.phase === 'recording'
       ? capture.mode === 'manual'
-        ? 'Manual recording is active. Stop from here or the page bar.'
+        ? 'Manual recording continues across pages in its tab. Stop from here or the page bar.'
         : 'Auto recording is active. Stop from here or the page bar.'
       : ['processing', 'saving'].includes(capture.phase) ? 'Saving to your selected folder…' : 'Stopping the recording…';
   } else if (statusUnavailable) {
@@ -210,7 +212,7 @@ function render() {
   } else {
     setBadge('', 'neutral');
     guidanceEl.textContent = selectionMode ? 'Choose a visible area on the page, then save.' : manualModeEl.checked
-      ? 'You control the page. Stop when ready; 3-minute limit.'
+      ? 'Browse within this tab. Stop when ready; 3-minute limit.'
       : 'Scrolls to the bottom and saves; 3-minute limit.';
   }
 }
@@ -319,6 +321,12 @@ stopBtn.addEventListener('click', async () => {
     if (!response?.ok) throw new Error(response?.error || 'Could not stop recording.');
     capture = capture.phase === 'selecting' ? null : { ...capture, phase: 'saving' };
   } catch (err) {
+    // The page can disappear while this popup is open. Refresh before rendering
+    // so an interrupted recording does not leave a dead Stop button behind.
+    try {
+      const status = await chrome.runtime.sendMessage({ type: 'CAPTURE_STATUS' });
+      if (status?.ok) capture = status.capture;
+    } catch {}
     showError(`Could not stop: ${err.message || err}`);
   } finally {
     busy = false;

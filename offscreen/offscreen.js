@@ -2,6 +2,7 @@ const statusEl = document.getElementById('status');
 
 const handleChannel = new BroadcastChannel('design-capture-handles');
 let cachedDirHandle = null;
+let manualRecording = null;
 handleChannel.onmessage = (e) => {
   if (e.data?.type === 'HANDLE') {
     cachedDirHandle = e.data.handle;
@@ -18,6 +19,77 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.type === 'OFFSCREEN_MANUAL_START') {
+    startManualRecording(message).then(() => sendResponse({ ok: true }))
+      .catch(err => sendResponse({ ok: false, error: err.message }));
+    return true;
+  }
+  if (message.type === 'OFFSCREEN_MANUAL_STOP') {
+    try { stopManualRecording(message.captureId, message.reason); sendResponse({ ok: true }); }
+    catch (err) { sendResponse({ ok: false, error: err.message }); }
+    return false;
+  }
+  if (message.type === 'OFFSCREEN_MANUAL_PAGE') {
+    const recording = manualRecording;
+    if (!recording || recording.capture.startedAt !== message.captureId) {
+      sendResponse({ ok: false, error: 'Recording details were lost.' });
+      return false;
+    }
+    if (['saving', 'saved', 'failed'].includes(recording.phase)) {
+      sendResponse({ ok: false, error: 'Page sampling has finished.' });
+      return false;
+    }
+    const existing = recording.pages.find(saved => saved.documentId === message.page.documentId);
+    const page = { ...existing, ...message.page };
+    page.errors = [...new Set([...(existing?.errors || []), ...(message.page.errors || [])])];
+    if (existing) {
+      for (const key of ['entryUrl', 'visitedAt', 'videoOffsetS']) if (existing[key] !== undefined) page[key] = existing[key];
+    }
+    if (message.visit && recording.visits.length < 200) recording.visits.push({
+      documentId: page.documentId, url: message.page.entryUrl, videoOffsetS: message.page.videoOffsetS, visitedAt: message.page.visitedAt });
+    if (page.html && new Blob([page.html]).size > 4 * 1024 * 1024) {
+      page.html = null;
+      page.errors.push('HTML snapshot exceeded the 4 MiB page limit.');
+    }
+    const priorBytes = existing ? new Blob([JSON.stringify(existing)]).size : 0;
+    const nextBytes = new Blob([JSON.stringify(page)]).size;
+    const total = (recording.evidenceBytes || 0) - priorBytes + nextBytes;
+    if (total > 48 * 1024 * 1024) {
+      if (existing) existing.errors.push('Later page evidence exceeded the recording memory limit.');
+      else if (!recording.omittedDocuments.has(page.documentId)) { recording.omittedDocuments.add(page.documentId); recording.omittedPages++; }
+      sendResponse({ ok: true });
+      return false;
+    }
+    if (existing) {
+      Object.assign(existing, page);
+    } else if (recording.pages.length < 24) {
+      recording.pages.push(page);
+    } else {
+      if (!recording.omittedDocuments.has(page.documentId)) { recording.omittedDocuments.add(page.documentId); recording.omittedPages++; }
+      sendResponse({ ok: true }); return false;
+    }
+    recording.evidenceBytes = total;
+    sendResponse({ ok: true });
+    return false;
+  }
+  if (message.type === 'OFFSCREEN_MANUAL_SAVE') {
+    saveManualRecording(message.captureId).then(result => sendResponse({ ok: true, result }))
+      .catch(err => sendResponse({ ok: false, error: err.message }));
+    return true;
+  }
+  if (message.type === 'OFFSCREEN_MANUAL_CANCEL') {
+    const recording = manualRecording;
+    if (recording?.capture.startedAt === message.captureId) {
+      recording.cancelled = true;
+      clearTimeout(recording.timer);
+      if (recording.recorder.state !== 'inactive') recording.recorder.stop();
+      recording.stream.getTracks().forEach(track => track.stop());
+      manualRecording = null;
+    }
+    sendResponse({ ok: true });
+    return false;
+  }
+
   if (message.type === 'OFFSCREEN_WRITE_BUNDLE') {
     statusEl.textContent = 'Writing bundle…';
     writeBundle(message.payload)
@@ -27,6 +99,76 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
   return false;
 });
+
+async function startManualRecording(message) {
+  if (manualRecording && !['saved', 'failed'].includes(manualRecording.phase)) throw new Error('A manual recording is already active.');
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: false,
+    video: { mandatory: { chromeMediaSource: 'tab', chromeMediaSourceId: message.streamId } } });
+  let recorder;
+  try { recorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp9' }); }
+  catch (error) { stream.getTracks().forEach(track => track.stop()); throw error; }
+  const recording = { capture: message.capture, recorder, stream, chunks: [], pages: [{
+    documentId: message.capture.documentId, url: message.capture.url, entryUrl: message.capture.url,
+    title: message.capture.title, visitedAt: message.capture.startedAt, videoOffsetS: 0, errors: [] }], visits: [], omittedPages: 0, omittedDocuments: new Set(),
+    phase: 'recording', beganAt: Date.now(), reason: null, cancelled: false, blob: null };
+  manualRecording = recording;
+  recorder.ondataavailable = event => { if (!recording.cancelled && event.data?.size) recording.chunks.push(event.data); };
+  recorder.onstop = async () => {
+    clearTimeout(recording.timer);
+    if (recording.cancelled) return;
+    recording.stream.getTracks().forEach(track => track.stop());
+    recording.stoppedAt ||= Date.now();
+    recording.reason ||= 'stream-ended';
+    recording.blob = new Blob(recording.chunks, { type: 'video/webm' });
+    recording.chunks = [];
+    recording.phase = 'processing';
+    try {
+      const response = await chrome.runtime.sendMessage({ type: 'MANUAL_VIDEO_READY', captureId: recording.capture.startedAt,
+        reason: recording.reason, durationS: (recording.stoppedAt - recording.beganAt) / 1000 });
+      if (!response?.ok) throw new Error(response?.error || 'Could not finish manual recording.');
+    } catch (error) {
+      recording.phase = 'failed';
+      statusEl.textContent = 'Recording could not be saved: ' + error.message;
+    }
+  };
+  for (const track of stream.getTracks()) track.addEventListener('ended', () => {
+    if (!recording.cancelled && manualRecording === recording) stopManualRecording(recording.capture.startedAt, 'stream-ended');
+  }, { once: true });
+  try { recorder.start(1000); }
+  catch (error) { recording.cancelled = true; stream.getTracks().forEach(track => track.stop()); manualRecording = null; throw error; }
+  recording.timer = setTimeout(() => stopManualRecording(recording.capture.startedAt, 'time-limit'), 180000);
+}
+
+function stopManualRecording(captureId, reason = 'user') {
+  const recording = manualRecording;
+  if (!recording || recording.capture.startedAt !== captureId) throw new Error('No manual recording for this capture.');
+  if (recording.recorder.state === 'inactive') return;
+  recording.reason = reason;
+  recording.stoppedAt = Date.now();
+  recording.phase = 'stopping';
+  clearTimeout(recording.timer);
+  recording.recorder.stop();
+}
+
+async function saveManualRecording(captureId) {
+  const recording = manualRecording;
+  if (!recording || recording.capture.startedAt !== captureId || !recording.blob) throw new Error('Recorded video is unavailable.');
+  if (recording.phase === 'saving' || recording.phase === 'saved') throw new Error('Already saving this recording.');
+  recording.phase = 'saving';
+  try {
+    const first = recording.pages[0] || {};
+    const result = await writeBundle({ ...recording.capture,
+      video: { blob: recording.blob, size: recording.blob.size,
+        durationS: (recording.stoppedAt - recording.beganAt) / 1000, stopReason: recording.reason },
+      screenshot: first.screenshot || {}, html: first.html || '', tokens: first.tokens || {},
+      journeyPages: recording.pages, journeyVisits: recording.visits, omittedPages: recording.omittedPages });
+    recording.phase = 'saved';
+    recording.blob = null;
+    recording.pages = [];
+    recording.visits = [];
+    return result;
+  } catch (error) { recording.phase = 'failed'; throw error; }
+}
 
 async function writeBundle(payload) {
   const handle = cachedDirHandle;
@@ -92,13 +234,14 @@ async function writeBundle(payload) {
   viewportDir = await bundleDir.getDirectoryHandle(viewportDirName, { create: true });
 
   if (isSelection) return writeSelectionBundle(payload, { handle, bundleDir, viewportDir, folderName, viewportDirName, isMerge, warnings });
+  if (!payload.journeyPages && !payload.screenshot?.dataUrl) throw new Error('Page screenshot unavailable.');
 
   // Viewport-specific must-succeed files (fast writes, before any long-running step).
   // Chrome's File System Access handles can go stale during long idle waits — get
   // everything important on disk early so a contact-sheet failure doesn't drop the bundle.
-  const videoBlob = await dataUrlToBlob(payload.video.dataUrl);
+  const videoBlob = payload.video.blob || await dataUrlToBlob(payload.video.dataUrl);
   await writeFile(viewportDir, 'scroll.webm', videoBlob);
-  await writeFile(viewportDir, 'page.jpg', await dataUrlToBlob(payload.screenshot.dataUrl));
+  if (payload.screenshot.dataUrl) await writeFile(viewportDir, 'page.jpg', await dataUrlToBlob(payload.screenshot.dataUrl));
   await writeFile(viewportDir, 'page.html', new Blob([payload.html], { type: 'text/html' }));
   // Each capture keeps its own context, including repeated and mobile captures.
   await writeFile(viewportDir, 'note.md', new Blob([buildNoteMd(payload)]));
@@ -135,9 +278,37 @@ async function writeBundle(payload) {
       contact_sheet: null,
       frames_sampled: 0
     },
-    screenshot: { file: 'page.jpg', stop_reason: payload.screenshot.stopReason || null },
+    screenshot: { file: payload.screenshot.dataUrl ? 'page.jpg' : null, stop_reason: payload.screenshot.stopReason || null,
+      ...(payload.screenshot.scope ? { scope: payload.screenshot.scope } : {}) },
     tool_version: payload.toolVersion
   };
+  if (payload.journeyPages) {
+    const pagesDir = await viewportDir.getDirectoryHandle('pages', { create: true });
+    const pages = [];
+    for (const [index, page] of payload.journeyPages.entries()) {
+      const folder = String(index + 1).padStart(3, '0');
+      const dir = await pagesDir.getDirectoryHandle(folder, { create: true });
+      if (page.html) await writeFile(dir, 'page.html', new Blob([page.html], { type: 'text/html' }));
+      if (page.tokens) await writeFile(dir, 'tokens.json', new Blob([JSON.stringify(page.tokens, null, 2)]));
+      if (page.screenshot?.dataUrl) await writeFile(dir, 'page.jpg', await dataUrlToBlob(page.screenshot.dataUrl));
+      const entry = { url: page.url, entry_url: page.entryUrl, title: page.title || null,
+        visited_at: page.visitedAt, sampled_at: page.sampledAt || null, video_offset_s: page.videoOffsetS,
+        viewport_size: page.viewportSize || null, folder,
+        html_file: page.html ? folder + '/page.html' : null, tokens_file: page.tokens ? folder + '/tokens.json' : null,
+        screenshot_file: page.screenshot?.dataUrl ? folder + '/page.jpg' : null,
+        screenshot_scope: page.screenshot?.scope || null, errors: page.errors || [] };
+      await writeFile(dir, 'meta.json', new Blob([JSON.stringify(entry, null, 2)]));
+      pages.push(entry);
+    }
+    const visits = (payload.journeyVisits || []).map(visit => {
+      const index = payload.journeyPages.findIndex(page => page.documentId === visit.documentId);
+      return { url: visit.url, visited_at: visit.visitedAt, video_offset_s: visit.videoOffsetS,
+        page_folder: index < 0 ? null : String(index + 1).padStart(3, '0') };
+    });
+    await writeFile(pagesDir, 'index.json', new Blob([JSON.stringify({ schema_version: 1, video_file: '../scroll.webm',
+      pages, visits, omitted_pages: payload.omittedPages || 0, max_page_snapshots: 24, max_evidence_bytes: 48 * 1024 * 1024 }, null, 2)]));
+    meta.recording_pages = { index_file: 'pages/index.json', saved: pages.length, omitted: payload.omittedPages || 0 };
+  }
   const evidence = payload.screenshot.evidence;
   if (evidence) {
     const { tiles, ...measurements } = evidence;

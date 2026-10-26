@@ -41,6 +41,10 @@ Use **?** in the popup for a quick guide to capture modes, stopping, saving, and
 
 The camera control stays visible throughout capture and saving. It appears in the saved JPEG and video; the HTML snapshot excludes it.
 
+Pages that update their address as you scroll can keep recording. Manual recording also continues through page loads and reloads within its original tab, including other websites. The camera control returns on each supported page; Stop and the three-minute limit apply to the whole recording. Switching tabs does not switch the recorded tab. Loading a page Chrome does not allow the extension to access ends the recording and saves the available evidence.
+
+Each Manual capture stays in the bundle for its starting URL and saves one continuous `scroll.webm`. Its `pages/index.json` links each visited document's URL, video offset, HTML, sampled styles and image, with a visit timeline for revisits. Earlier pages get a visible-viewport snapshot; the final page gets the usual full-page screenshot after Stop. The capture's top-level page files describe the starting document. Up to 24 document snapshots and 48 MiB of page evidence are retained; missing or omitted evidence is recorded in the index. If a page is left too quickly or the tab closes, available snapshots and the recording are saved. Auto capture and Selection remain scoped to one document.
+
 Capturing the same exact page URL again, on any day, adds another capture folder to its existing bundle in the selected destination. Auto, Manual, mobile and selection captures share that bundle. Its name keeps the first capture's date; each capture's `meta.json` records its own time. New pages get a dated folder, with a numeric suffix when needed. Different paths, query parameters and fragments stay separate. Widths below 768 pixels are labelled mobile.
 
 Existing bundles are recognized by `url.txt`, including renamed folders directly inside the selected destination. If older versions created several bundles for the same URL, future captures use the earliest dated match (then name order); existing bundles are not moved or combined. A different destination starts its own collection.

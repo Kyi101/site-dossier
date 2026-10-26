@@ -35,6 +35,7 @@ bundle; each capture directory is a separate moment, viewport, and user intent.
 | `scroll-sheet.png` | Sampled video overview; newer sheets label frames and times |
 | `scroll.webm` | Recorded motion and interactions |
 | `page.html` | Large, best-effort HTML snapshot for targeted inspection |
+| `pages/index.json` | Manual recording's visited documents, visit timeline, video offsets and per-document evidence paths |
 | `selections.json` | Selected items, item notes, crop paths, coordinates and context image path |
 | `selection-01.json` | Bounded DOM structure and sampled computed styles for one picked element |
 
@@ -43,6 +44,16 @@ first capture; do not apply them over a later capture's own files. Older bundles
 may only have root notes/tokens, may use `page.png`, or may lack metadata. Fall
 back to available files and identify uncertain attribution. Missing files or
 fields mean unavailable evidence, not a negative preference or a current bug.
+
+For Manual recordings with `recording_pages` in metadata, the video can span
+multiple page loads or websites. Top-level page evidence belongs to the starting
+document. Follow `pages/index.json` for each other document's URL, HTML, styles,
+image and video offset; its paths are relative to `pages/`. Earlier images cover
+the visible viewport; the final document can have a full-page image. Revisited
+documents share an evidence folder and appear again in the visit timeline. Never
+attribute every page in that video to its starting URL or apply one document's
+styles to another. Check missing-file fields, errors and omitted-page counts;
+leaving a page quickly can prevent its snapshot even while the video continues.
 
 ## Interpret preferences
 
